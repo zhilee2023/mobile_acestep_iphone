@@ -2,6 +2,8 @@ name: ACE-Step iOS Build
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
 
 permissions:
   contents: read
