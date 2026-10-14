@@ -1,0 +1,12 @@
+{
+  "name": "all-w4-experiment",
+  "description": "Weight-only 4-bit conversion of Text Encoder, Turbo DiT, and VAE decoder; compare against floating-point models before deployment.",
+  "weight_quant_bits": 4,
+  "weight_quant_block": 64,
+  "hqq": true,
+  "models": [
+    {"component": "text_encoder", "onnx": "text_encoder.onnx", "float_mnn": "text_encoder_fp.mnn", "quant_mnn": "text_encoder_w4.mnn"},
+    {"component": "dit", "onnx": "dit.onnx", "float_mnn": "dit_fp.mnn", "quant_mnn": "dit_w4.mnn"},
+    {"component": "vae_decoder", "onnx": "vae_decoder.onnx", "float_mnn": "vae_decoder_fp.mnn", "quant_mnn": "vae_decoder_w4.mnn"}
+  ]
+}

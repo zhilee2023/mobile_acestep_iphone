@@ -1,0 +1,77 @@
+from __future__ import annotations
+
+import json
+import sys
+import wave
+from pathlib import Path
+
+import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+
+from quant.validate_quant import metrics
+from runtime.smoke_wav import write_smoke_wav
+
+
+def test_pipeline_contract() -> None:
+    config = json.loads((ROOT / "config" / "pipeline.json").read_text(encoding="utf-8"))
+    assert config["generation"] == {
+        "caption": "Soft piano ambient music",
+        "lyrics": "[Instrumental]",
+        "duration_seconds": 10,
+        "seed": 42,
+        "steps": 8,
+        "batch_size": 1,
+        "sample_rate": 48000,
+        "channels": 2,
+    }
+    assert config["runtime"]["load_order"] == ["text_encoder", "dit", "vae"]
+
+
+def test_all_w4_components_match_pipeline() -> None:
+    pipeline = json.loads((ROOT / "config" / "pipeline.json").read_text(encoding="utf-8"))
+    experiment = json.loads((ROOT / "config" / "all-w4.json").read_text(encoding="utf-8"))
+    assert experiment["weight_quant_bits"] == 4
+    assert [row["component"] for row in experiment["models"]] == [
+        "text_encoder", "dit", "vae_decoder"
+    ]
+    assert all(row["quant_mnn"].endswith("_w4.mnn") for row in experiment["models"])
+    assert {
+        key: value for key, value in pipeline["conversion"].items() if key.endswith("_weight_bits")
+    } == {
+        "text_encoder_weight_bits": 4,
+        "dit_weight_bits": 4,
+        "vae_weight_bits": 4,
+    }
+
+
+def test_quant_metrics_identity() -> None:
+    value = np.array([[1.0, -2.0, 3.0]], dtype=np.float32)
+    result = metrics(value, value.copy())
+    assert result["relative_l2"] == 0.0
+    assert result["max_absolute_error"] == 0.0
+    assert result["cosine_similarity"] > 0.999999
+
+
+def test_smoke_wav(tmp_path: Path) -> None:
+    output = tmp_path / "smoke.wav"
+    write_smoke_wav(output, seconds=0.02)
+    with wave.open(str(output), "rb") as wav:
+        assert wav.getframerate() == 48_000
+        assert wav.getnchannels() == 2
+        assert wav.getsampwidth() == 2
+        assert wav.getnframes() == 960
+
+
+def test_required_layout() -> None:
+    required = [
+        ".github/workflows/build-ios.yml",
+        "project.yml",
+        "runtime/CMakeLists.txt",
+        "ios/App/AceStepApp.swift",
+        "ios/Bridge/AceBridge.mm",
+    ]
+    missing = [name for name in required if not (ROOT / name).exists()]
+    assert not missing, f"missing project files: {missing}"
+

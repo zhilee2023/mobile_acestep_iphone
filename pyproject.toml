@@ -1,0 +1,20 @@
+[project]
+name = "ace-step-mnn-ios-tools"
+version = "0.1.0"
+description = "Reproducible tooling for the ACE-Step 1.5 to MNN iOS experiment"
+requires-python = ">=3.11,<3.13"
+dependencies = [
+  "numpy>=1.26,<3",
+]
+
+[dependency-groups]
+dev = [
+  "MNN==3.6.1",
+  "onnx>=1.20,<2",
+  "pytest>=8,<10",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+

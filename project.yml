@@ -1,0 +1,34 @@
+name: AceStepMobile
+options:
+  minimumXcodeGenVersion: 2.40.0
+  deploymentTarget:
+    iOS: "17.0"
+settings:
+  base:
+    SWIFT_VERSION: "5.0"
+    IPHONEOS_DEPLOYMENT_TARGET: "17.0"
+targets:
+  AceStepMobile:
+    type: application
+    platform: iOS
+    sources:
+      - path: ios/App
+      - path: ios/Bridge
+    info:
+      path: ios/Info.plist
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.example.AceStepMobile
+        PRODUCT_NAME: AceStepMobile
+        SWIFT_OBJC_BRIDGING_HEADER: ios/Bridge/AceStepMobile-Bridging-Header.h
+        HEADER_SEARCH_PATHS:
+          - "$(PROJECT_DIR)/Vendor/MNN.framework/Headers"
+        OTHER_LDFLAGS:
+          - "$(inherited)"
+          - "-ObjC"
+    dependencies:
+      - framework: Vendor/MNN.framework
+        embed: false
+    scheme:
+      testTargets: []
+

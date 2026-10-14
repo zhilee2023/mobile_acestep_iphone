@@ -1,0 +1,35 @@
+{
+  "schema_version": 1,
+  "model": {
+    "repository": "https://github.com/ace-step/ACE-Step-1.5.git",
+    "revision": "ca1e85fe9430179831e6bc6be790c332190a3866",
+    "weights_repository": "ACE-Step/Ace-Step1.5",
+    "weights_revision": "19671f406d603126926c1b7e2adc169acbcade22",
+    "dit": "acestep-v15-turbo",
+    "text_encoder": "Qwen3-Embedding-0.6B",
+    "vae": "vae",
+    "lm_enabled": false
+  },
+  "generation": {
+    "caption": "Soft piano ambient music",
+    "lyrics": "[Instrumental]",
+    "duration_seconds": 10,
+    "seed": 42,
+    "steps": 8,
+    "batch_size": 1,
+    "sample_rate": 48000,
+    "channels": 2
+  },
+  "conversion": {
+    "text_encoder_weight_bits": 4,
+    "dit_weight_bits": 4,
+    "vae_weight_bits": 4,
+    "weight_quant_block": 64
+  },
+  "runtime": {
+    "load_order": ["text_encoder", "dit", "vae"],
+    "memory_mode": "low",
+    "backend_ios": "metal"
+  }
+}
+

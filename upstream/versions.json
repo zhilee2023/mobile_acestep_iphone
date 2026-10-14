@@ -1,0 +1,14 @@
+{
+  "ace_step_source": {
+    "url": "https://github.com/ace-step/ACE-Step-1.5.git",
+    "commit": "ca1e85fe9430179831e6bc6be790c332190a3866"
+  },
+  "ace_step_weights": {
+    "url": "https://huggingface.co/ACE-Step/Ace-Step1.5",
+    "commit": "19671f406d603126926c1b7e2adc169acbcade22"
+  },
+  "mnn": {
+    "url": "https://github.com/alibaba/MNN.git",
+    "commit": "9f097c5fdd48e0cac4468d4cc53a828794d96888"
+  }
+}

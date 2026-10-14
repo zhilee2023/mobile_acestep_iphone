@@ -1,0 +1,70 @@
+name: ACE-Step iOS Build
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 90
+    env:
+      MNN_COMMIT: 9f097c5fdd48e0cac4468d4cc53a828794d96888
+
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+
+      - name: Install build tools
+        run: brew install cmake xcodegen
+
+      - name: Checkout pinned MNN
+        run: |
+          git clone --filter=blob:none https://github.com/alibaba/MNN.git MNN
+          git -C MNN checkout "$MNN_COMMIT"
+          git -C MNN submodule update --init --recursive --depth 1
+
+      - name: Build MNN framework with Metal and low-memory weights
+        working-directory: MNN
+        run: |
+          sh package_scripts/ios/buildiOS.sh \
+            -DMNN_LOW_MEMORY=ON \
+            -DMNN_SUPPORT_TRANSFORMER_FUSE=ON \
+            -DMNN_OPENCL=OFF
+
+      - name: Stage framework
+        run: |
+          mkdir -p Vendor
+          cp -R MNN/MNN-iOS-CPU-GPU/Static/MNN.framework Vendor/
+          test -f Vendor/MNN.framework/MNN
+
+      - name: Generate Xcode project
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild \
+            -project AceStepMobile.xcodeproj \
+            -scheme AceStepMobile \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$PWD/build" \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Package unsigned IPA
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/AceStepMobile.app Payload/
+          ditto -c -k --sequesterRsrc --keepParent Payload AceStepMobile-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: AceStepMobile-unsigned
+          path: AceStepMobile-unsigned.ipa
+          if-no-files-found: error
+
