@@ -29,11 +29,12 @@ final class ModelStore: ObservableObject {
     var importedBytes: Int64 { Self.requiredFiles.reduce(Int64(0)) { $0 + (fileSizes[$1.name] ?? 0) } }
 
     private let modelDirectory: URL
+    private let legacyModelDirectory: URL
 
     init(fileManager: FileManager = .default) {
         let documents = fileManager.urls(for: .documentDirectory, in: .userDomainMask)[0]
-        modelDirectory = documents.appendingPathComponent("Models", isDirectory: true)
-        try? fileManager.createDirectory(at: modelDirectory, withIntermediateDirectories: true)
+        modelDirectory = documents
+        legacyModelDirectory = documents.appendingPathComponent("Models", isDirectory: true)
         refresh(fileManager: fileManager)
     }
 
@@ -77,9 +78,12 @@ final class ModelStore: ObservableObject {
         showingMessage = true
     }
 
-    private func refresh(fileManager: FileManager) {
+    func refresh(fileManager: FileManager = .default) {
         fileSizes = Dictionary(uniqueKeysWithValues: Self.requiredFiles.compactMap { spec in
-            guard let attributes = try? fileManager.attributesOfItem(atPath: modelDirectory.appendingPathComponent(spec.name).path),
+            let direct = modelDirectory.appendingPathComponent(spec.name)
+            let legacy = legacyModelDirectory.appendingPathComponent(spec.name)
+            let path = fileManager.fileExists(atPath: direct.path) ? direct.path : legacy.path
+            guard let attributes = try? fileManager.attributesOfItem(atPath: path),
                   let size = attributes[.size] as? NSNumber else { return nil }
             return (spec.name, size.int64Value)
         })

@@ -23,6 +23,9 @@ struct ContentView: View {
                         }
                     }
                     Button("从“文件”导入模型") { importing = true }
+                    Button("刷新模型状态") { modelStore.refresh() }
+                    Text("USB 传输：在 Windows 的 Apple Devices 中把七个文件放入此 App，再点“刷新模型状态”。")
+                        .foregroundStyle(.secondary)
                 }
                 Section("部署状态") {
                     Text(modelStore.allModelsPresent
