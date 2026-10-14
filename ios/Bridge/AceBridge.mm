@@ -66,11 +66,15 @@ NSData *probeData(NSString *name) {
         for (NSString *name in inputs) {
             NSData *data = probeData(inputs[name]);
             MNN::Tensor *input = net->getSessionInput(session, name.UTF8String);
-            if (!input || !data || data.length != input->usize()) {
+            if (!input || !data) {
                 net->releaseSession(session);
                 return failure([NSString stringWithFormat:@"DiT 测试输入 %@ 缺失或形状不符。", name]);
             }
             MNN::Tensor host(input, input->getDimensionType(), true);
+            if (!host.host<float>() || data.length != host.usize()) {
+                net->releaseSession(session);
+                return failure([NSString stringWithFormat:@"DiT 测试输入 %@ 缺失或形状不符。", name]);
+            }
             std::memcpy(host.host<float>(), data.bytes, data.length);
             if (!input->copyFromHostTensor(&host)) {
                 if (!input->host<float>()) {
@@ -91,11 +95,15 @@ NSData *probeData(NSString *name) {
 
         MNN::Tensor *output = net->getSessionOutput(session, "denoised");
         NSData *golden = probeData(@"dit-golden");
-        if (!output || !golden || output->usize() != golden.length) {
+        if (!output || !golden) {
             net->releaseSession(session);
             return failure(@"DiT 输出形状与参考结果不符。");
         }
         MNN::Tensor host(output, output->getDimensionType(), true);
+        if (!host.host<float>() || host.usize() != golden.length) {
+            net->releaseSession(session);
+            return failure(@"DiT 输出形状与参考结果不符。");
+        }
         if (!output->copyToHostTensor(&host)) {
             if (!output->host<float>()) {
                 net->releaseSession(session);

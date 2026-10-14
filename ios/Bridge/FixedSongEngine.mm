@@ -49,9 +49,9 @@ std::unique_ptr<Graph> openGraph(NSString *path) {
 
 bool setInput(Graph &graph, const char *name, const float *values, size_t count) {
     MNN::Tensor *input = graph.interpreter->getSessionInput(graph.session, name);
-    if (!input || input->usize() != count * sizeof(float)) return false;
+    if (!input) return false;
     MNN::Tensor host(input, input->getDimensionType(), true);
-    if (!host.host<float>()) return false;
+    if (!host.host<float>() || host.usize() != count * sizeof(float)) return false;
     std::memcpy(host.host<float>(), values, count * sizeof(float));
     if (!input->copyFromHostTensor(&host)) {
         if (!input->host<float>()) return false;
@@ -62,9 +62,9 @@ bool setInput(Graph &graph, const char *name, const float *values, size_t count)
 
 bool readOutput(Graph &graph, const char *name, size_t count, std::vector<float> &values) {
     MNN::Tensor *output = graph.interpreter->getSessionOutput(graph.session, name);
-    if (!output || output->usize() != count * sizeof(float)) return false;
+    if (!output) return false;
     MNN::Tensor host(output, output->getDimensionType(), true);
-    if (!host.host<float>()) return false;
+    if (!host.host<float>() || host.usize() != count * sizeof(float)) return false;
     if (!output->copyToHostTensor(&host)) {
         if (!output->host<float>()) return false;
         std::memcpy(host.host<float>(), output->host<float>(), count * sizeof(float));
