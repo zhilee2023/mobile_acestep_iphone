@@ -55,6 +55,13 @@ jobs:
             CODE_SIGNING_ALLOWED=NO \
             build
 
+      - name: Verify USB file sharing in app
+        run: |
+          APP_PLIST="build/Build/Products/Release-iphoneos/AceStepMobile.app/Info.plist"
+          test "$(plutil -extract UIFileSharingEnabled json -o - "$APP_PLIST")" = "true"
+          test "$(plutil -extract LSSupportsOpeningDocumentsInPlace json -o - "$APP_PLIST")" = "true"
+          test "$(plutil -extract CFBundleVersion raw -o - "$APP_PLIST")" = "2"
+
       - name: Package unsigned IPA
         run: |
           mkdir -p Payload

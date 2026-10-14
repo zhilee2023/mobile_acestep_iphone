@@ -16,6 +16,14 @@ targets:
       - path: ios/Bridge
     info:
       path: ios/Info.plist
+      properties:
+        CFBundleShortVersionString: "0.1.0"
+        CFBundleVersion: "2"
+        LSRequiresIPhoneOS: true
+        UIFileSharingEnabled: true
+        LSSupportsOpeningDocumentsInPlace: true
+        UISupportedInterfaceOrientations:
+          - UIInterfaceOrientationPortrait
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.example.AceStepMobile
