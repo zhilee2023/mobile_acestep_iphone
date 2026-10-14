@@ -61,6 +61,7 @@ jobs:
           python3 - "$APP_PLIST" <<'PY'
           import plistlib
           import sys
+          from pathlib import Path
 
           with open(sys.argv[1], "rb") as bundle_info:
               info = plistlib.load(bundle_info)
@@ -68,7 +69,8 @@ jobs:
               print(f"{key}: {info.get(key)!r}")
           assert info.get("UIFileSharingEnabled") is True
           assert info.get("LSSupportsOpeningDocumentsInPlace") is True
-          assert str(info.get("CFBundleVersion")) == "2"
+          assert str(info.get("CFBundleVersion")) == "3"
+          assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-hidden.f32").is_file()
           PY
 
       - name: Package unsigned IPA

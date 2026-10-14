@@ -1,0 +1,31 @@
+{
+  "source": "captured 30-second vocal forward",
+  "shapes": {
+    "hidden_states": [
+      1,
+      750,
+      64
+    ],
+    "timestep": [
+      1
+    ],
+    "timestep_r": [
+      1
+    ],
+    "encoder_hidden_states": [
+      1,
+      181,
+      2048
+    ],
+    "context_latents": [
+      1,
+      750,
+      128
+    ],
+    "denoised": [
+      1,
+      750,
+      64
+    ]
+  }
+}

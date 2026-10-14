@@ -6,6 +6,7 @@ options:
 settings:
   base:
     SWIFT_VERSION: "5.0"
+    CLANG_CXX_LANGUAGE_STANDARD: "c++17"
     IPHONEOS_DEPLOYMENT_TARGET: "17.0"
 targets:
   AceStepMobile:
@@ -14,6 +15,8 @@ targets:
     sources:
       - path: ios/App
       - path: ios/Bridge
+      - path: ios/Probe
+        type: folder
     settings:
       base:
         INFOPLIST_FILE: ios/Info.plist
