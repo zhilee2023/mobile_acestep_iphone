@@ -14,18 +14,10 @@ targets:
     sources:
       - path: ios/App
       - path: ios/Bridge
-    info:
-      path: ios/Info.plist
-      properties:
-        CFBundleShortVersionString: "0.1.0"
-        CFBundleVersion: "2"
-        LSRequiresIPhoneOS: true
-        UIFileSharingEnabled: true
-        LSSupportsOpeningDocumentsInPlace: true
-        UISupportedInterfaceOrientations:
-          - UIInterfaceOrientationPortrait
     settings:
       base:
+        INFOPLIST_FILE: ios/Info.plist
+        GENERATE_INFOPLIST_FILE: NO
         PRODUCT_BUNDLE_IDENTIFIER: com.example.AceStepMobile
         PRODUCT_NAME: AceStepMobile
         SWIFT_OBJC_BRIDGING_HEADER: ios/Bridge/AceStepMobile-Bridging-Header.h

@@ -58,9 +58,18 @@ jobs:
       - name: Verify USB file sharing in app
         run: |
           APP_PLIST="build/Build/Products/Release-iphoneos/AceStepMobile.app/Info.plist"
-          test "$(plutil -extract UIFileSharingEnabled json -o - "$APP_PLIST")" = "true"
-          test "$(plutil -extract LSSupportsOpeningDocumentsInPlace json -o - "$APP_PLIST")" = "true"
-          test "$(plutil -extract CFBundleVersion raw -o - "$APP_PLIST")" = "2"
+          python3 - "$APP_PLIST" <<'PY'
+          import plistlib
+          import sys
+
+          with open(sys.argv[1], "rb") as bundle_info:
+              info = plistlib.load(bundle_info)
+          for key in ("UIFileSharingEnabled", "LSSupportsOpeningDocumentsInPlace", "CFBundleVersion"):
+              print(f"{key}: {info.get(key)!r}")
+          assert info.get("UIFileSharingEnabled") is True
+          assert info.get("LSSupportsOpeningDocumentsInPlace") is True
+          assert str(info.get("CFBundleVersion")) == "2"
+          PY
 
       - name: Package unsigned IPA
         run: |
