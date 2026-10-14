@@ -18,6 +18,8 @@ struct ContentView: View {
     @State private var importingLyrics = false
     @State private var importingAudio = false
     @State private var showsModelDetails = false
+    @State private var isGenerating = false
+    @State private var generationMessage = "请先完成 DiT 真机单步测试。"
 
     var body: some View {
         ZStack {
@@ -27,9 +29,10 @@ struct ContentView: View {
                     header
                     songCard
                     lyricsCard
-                    playerCard
                     modelCard
                     probeCard
+                    generationCard
+                    playerCard
                     metricsCard
                     Text("ACE-Step 1.5 · MNN W4 · iPhone 实验版")
                         .font(.caption2).foregroundStyle(StudioPalette.secondary)
@@ -137,7 +140,7 @@ struct ContentView: View {
                 VStack(alignment: .leading, spacing: 5) {
                     Text(studio.audioName ?? "还没有可播放的音频")
                         .font(.subheadline.weight(.semibold)).lineLimit(1)
-                    Text(studio.audioName == nil ? "导入 WAV / M4A / MP3 试听" : "用户导入音频 · 非端侧生成")
+                    Text(studio.audioDescription)
                         .font(.caption).foregroundStyle(StudioPalette.secondary)
                 }
                 Spacer(minLength: 0)
@@ -227,10 +230,59 @@ struct ContentView: View {
                     metric("相对 L2", String(format: "%.3f", error))
                 }
             }
-            Label("整首生成尚未接通；播放与 RTF 不能用单步结果冒充。", systemImage: "info.circle")
+            Label("单步只是第一关；整首生成须独立完成。", systemImage: "info.circle")
                 .font(.caption2).foregroundStyle(.orange)
         }
         .studioCard()
+    }
+
+    private var generationCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
+            Text("固定条件样例：手机运行 8 步 DiT 与 6 段 VAE，输出 30 秒 WAV。文本条件来自预计算样例；上方编辑的歌词暂不会参与生成。")
+                .font(.subheadline).foregroundStyle(StudioPalette.secondary)
+            Button { generateFixedSong() } label: {
+                HStack {
+                    if isGenerating { ProgressView().tint(StudioPalette.background) }
+                    Text(isGenerating ? "手机正在生成…" : "生成固定样例 · 30 秒")
+                    Spacer()
+                    Image(systemName: "waveform")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating)
+            Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
+        }
+        .studioCard()
+    }
+
+    private func generateFixedSong() {
+        guard !isGenerating else { return }
+        isGenerating = true
+        generationMessage = "正在手机上执行 MNN 推理，请保持 App 在前台…"
+        metricsStore.beginGeneration()
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.generateFixedSong(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isGenerating = false
+                self.generationMessage = result["message"] as? String ?? "未收到生成结果。"
+                guard (result["success"] as? NSNumber)?.boolValue == true,
+                      let path = result["wavPath"] as? String else {
+                    self.metricsStore.cancelGeneration()
+                    return
+                }
+                self.metricsStore.finishGeneration(audioSeconds: 30,
+                    backend: result["backend"] as? String ?? "MNN Metal 请求 / CPU 回退可能")
+                do {
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path))
+                    self.generationMessage += " 已载入播放器。"
+                } catch {
+                    self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
+                }
+            }
+        }
     }
 
     private var metricsCard: some View {

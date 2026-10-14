@@ -4,17 +4,17 @@ import Foundation
 @MainActor
 final class SongStudioStore: ObservableObject {
     static let sampleLyrics = """
-    [Verse]
-    夜色轻轻落在窗台
-    把没说的话写成星海
-    走过的路都有微光
-    照着我向你的方向
-
     [Chorus]
-    让风带走昨天的雨
-    让心跳跟着这旋律
-    就算世界转得太快
-    这一刻我们慢慢来
+    你听见吗我在唱给你
+    把想念写进夜空里
+    别让故事停在这里
+    陪我唱到天亮起
+
+    [Verse]
+    窗外的风轻轻吹过
+    你眼里的光还亮着
+    现在就跟我一起唱
+    让这一刻留在心上
     """
 
     @Published var caption: String {
@@ -24,6 +24,7 @@ final class SongStudioStore: ObservableObject {
         didSet { UserDefaults.standard.set(lyrics, forKey: "song.lyrics") }
     }
     @Published private(set) var audioName: String?
+    @Published private(set) var audioDescription = "导入 WAV / M4A / MP3 试听"
     @Published private(set) var isPlaying = false
     @Published private(set) var currentTime: TimeInterval = 0
     @Published private(set) var duration: TimeInterval = 0
@@ -33,7 +34,7 @@ final class SongStudioStore: ObservableObject {
     private var player: AVAudioPlayer?
 
     init() {
-        caption = UserDefaults.standard.string(forKey: "song.caption") ?? "温柔的中文流行，清澈女声、钢琴与轻鼓点"
+        caption = UserDefaults.standard.string(forKey: "song.caption") ?? "Chinese Mandarin pop vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, piano, soft synth bass and pop drums, studio production."
         lyrics = UserDefaults.standard.string(forKey: "song.lyrics") ?? Self.sampleLyrics
     }
 
@@ -77,6 +78,7 @@ final class SongStudioStore: ObservableObject {
                 player?.stop()
                 player = candidate
                 audioName = source.lastPathComponent
+                audioDescription = "用户导入音频 · 非端侧生成"
                 currentTime = 0
                 duration = candidate.duration
                 isPlaying = false
@@ -88,12 +90,27 @@ final class SongStudioStore: ObservableObject {
         } catch { notify("导入音频失败：\(error.localizedDescription)") }
     }
 
+    func useGeneratedAudio(at url: URL) throws {
+        let candidate = try AVAudioPlayer(contentsOf: url)
+        guard candidate.duration > 0 else { throw StudioError.invalidAudio }
+        candidate.prepareToPlay()
+        player?.stop()
+        player = candidate
+        audioName = url.lastPathComponent
+        audioDescription = "iPhone DiT + VAE 推理 · 固定预计算条件"
+        currentTime = 0
+        duration = candidate.duration
+        isPlaying = false
+    }
+
     func togglePlayback() {
         guard let player else { return }
         if player.isPlaying {
             player.pause()
             isPlaying = false
         } else {
+            try? AVAudioSession.sharedInstance().setCategory(.playback)
+            try? AVAudioSession.sharedInstance().setActive(true)
             if player.currentTime >= player.duration { player.currentTime = 0 }
             isPlaying = player.play()
         }

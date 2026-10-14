@@ -1,4 +1,5 @@
 #import "AceBridge.h"
+#import "FixedSongEngine.h"
 #import <MNN/Interpreter.hpp>
 
 #include <algorithm>
@@ -120,6 +121,10 @@ NSData *probeData(NSString *name) {
         return @{ @"success": @YES, @"message": @"DiT W4 已在 iPhone 运行一次。Metal 已请求；未排除 CPU 算子回退。",
                   @"elapsedSeconds": @(seconds), @"relativeL2": @(relativeL2) };
     }
+}
+
++ (NSDictionary<NSString *, id> *)generateFixedSongAtDirectory:(NSString *)directory {
+    return [FixedSongEngine generateAtDirectory:directory];
 }
 
 @end

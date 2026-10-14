@@ -2,7 +2,7 @@
 
 这是一个按里程碑推进的实验工程，用于把 ACE-Step 1.5 Turbo 拆成 Text Encoder、DiT 和 VAE，导出 ONNX、转换 MNN，并集成到 iOS/Metal。
 
-> 当前状态：官方权重已完整下载，三个组件均已完成真实输入的 ONNX 导出、MNN FP/W4 转换和 Windows CPU 单步校验，并生成 8 种 10 秒 FP/W4 组合音频。iPhone 15 Metal 和端到端 iOS 推理尚未验证；详见 `docs/status.md`。
+> 当前状态：官方权重已完整下载，三个组件均已完成真实输入的 ONNX 导出、MNN FP/W4 转换和 Windows CPU 单步校验，并生成 8 种 10 秒 FP/W4 组合音频。iOS 已加入固定条件的 30 秒 DiT+VAE 端侧生成实验入口，仍待 iPhone 15 真机运行验证；上传的自定义歌词暂不参与生成。详见 `docs/ios-fixed-song.md`。
 
 ## 已固定的首版目标
 
