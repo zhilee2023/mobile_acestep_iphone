@@ -155,7 +155,7 @@ bool readProbe(NSString *name, NSString *extension, size_t bytes, std::vector<ui
         if (!sample) return failure(@"内置歌词样例缺失。", ids.count);
         // Run the exact upstream tokenizer contract before accepting any custom input.
         NSString *sampleError = nil;
-        NSArray<NSNumber *> *sampleTokens = tokenize([sample stringByTrimmingCharactersInSet:NSCharacterSet.newlineCharacterSet], &sampleError);
+        NSArray<NSNumber *> *sampleTokens = tokenize([sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]], &sampleError);
         if (!sampleTokens || sampleTokens.count != kLyricTokens) {
             return failure([NSString stringWithFormat:@"分词器自检失败：%@", sampleError ?: @"样例长度不一致"], ids.count);
         }
