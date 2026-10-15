@@ -78,9 +78,31 @@ struct Graph {
     }
 };
 
-std::unique_ptr<Graph> openGraph(NSString *path) {
+struct TensorStats {
+    float peak = 0.0f;
+    size_t invalidIndex = 0;
+    bool finite = true;
+};
+
+TensorStats tensorStats(const std::vector<float> &values) {
+    TensorStats result;
+    for (size_t index = 0; index < values.size(); ++index) {
+        if (!std::isfinite(values[index])) {
+            result.invalidIndex = index;
+            result.finite = false;
+            return result;
+        }
+        result.peak = std::max(result.peak, std::abs(values[index]));
+    }
+    return result;
+}
+
+std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace) {
     auto graph = std::make_unique<Graph>();
+    const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
+    trace.record([NSString stringWithFormat:@"%@：读取模型 %.3f 秒", path.lastPathComponent,
+                  CFAbsoluteTimeGetCurrent() - loadStarted]);
     if (!graph->interpreter) return nullptr;
     MNN::BackendConfig backend;
     backend.precision = MNN::BackendConfig::Precision_Low;
@@ -89,9 +111,15 @@ std::unique_ptr<Graph> openGraph(NSString *path) {
     config.type = MNN_FORWARD_METAL;
     config.backupType = MNN_FORWARD_CPU;
     config.backendConfig = &backend;
+    const CFAbsoluteTime sessionStarted = CFAbsoluteTimeGetCurrent();
     graph->session = graph->interpreter->createSession(config);
+    trace.record([NSString stringWithFormat:@"%@：创建会话 %.3f 秒", path.lastPathComponent,
+                  CFAbsoluteTimeGetCurrent() - sessionStarted]);
     if (!graph->session) return nullptr;
+    const CFAbsoluteTime releaseStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter->releaseModel();
+    trace.record([NSString stringWithFormat:@"%@：释放原始模型 %.3f 秒", path.lastPathComponent,
+                  CFAbsoluteTimeGetCurrent() - releaseStarted]);
     return graph;
 }
 
@@ -211,6 +239,14 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
             return failure(@"固定歌曲条件文件缺失；无法生成。");
         }
         trace.record(@"固定条件已加载");
+        const TensorStats initialStats = tensorStats(hidden);
+        if (!initialStats.finite) {
+            NSString *message = [NSString stringWithFormat:@"初始 latent 含非有限值，位置 %zu。",
+                                  initialStats.invalidIndex];
+            trace.record(message);
+            return failure(message);
+        }
+        trace.record([NSString stringWithFormat:@"初始 latent 峰值 %.8g", initialStats.peak]);
 
         NSString *ditPath = [directory stringByAppendingPathComponent:@"dit_w4.mnn"];
         if (![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"dit_w4.mnn.weight"]]) {
@@ -219,7 +255,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         }
         {
             trace.record(@"开始创建 DiT 会话");
-            auto dit = openGraph(ditPath);
+            auto dit = openGraph(ditPath, trace);
             if (!dit) return failure(@"无法创建 DiT MNN 会话；可能是内存不足或算子不支持。");
             trace.record(@"DiT 会话已创建");
             if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
@@ -240,15 +276,37 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                     !setInput(*dit, "timestep_r", &time, 1)) {
                     return failure(@"DiT 采样输入形状不匹配。");
                 }
+                const CFAbsoluteTime runStarted = CFAbsoluteTimeGetCurrent();
                 MNN::ErrorCode code = dit->interpreter->runSession(dit->session);
-                if (code != MNN::NO_ERROR || !readOutput(*dit, "denoised", latentCount, velocity)) {
+                const CFAbsoluteTime runEnded = CFAbsoluteTimeGetCurrent();
+                const bool readOK = code == MNN::NO_ERROR &&
+                    readOutput(*dit, "denoised", latentCount, velocity);
+                const CFAbsoluteTime readEnded = CFAbsoluteTimeGetCurrent();
+                if (!readOK) {
                     trace.record([NSString stringWithFormat:@"DiT %zu/8 失败", step + 1]);
                     return failure([NSString stringWithFormat:@"DiT 第 %zu/8 步失败（MNN %d）。", step + 1, static_cast<int>(code)]);
+                }
+                const TensorStats velocityStats = tensorStats(velocity);
+                if (!velocityStats.finite) {
+                    NSString *message = [NSString stringWithFormat:@"DiT %zu/8 输出含非有限值，位置 %zu。",
+                                          step + 1, velocityStats.invalidIndex];
+                    trace.record(message);
+                    return failure(message);
                 }
                 float next = step + 1 < kTimesteps.size() ? kTimesteps[step + 1] : 0.0f;
                 float delta = time - next;
                 for (size_t index = 0; index < latentCount; ++index) hidden[index] -= velocity[index] * delta;
-                trace.record([NSString stringWithFormat:@"DiT %zu/8 完成", step + 1]);
+                const TensorStats hiddenStats = tensorStats(hidden);
+                if (!hiddenStats.finite) {
+                    NSString *message = [NSString stringWithFormat:@"DiT %zu/8 更新后 latent 含非有限值，位置 %zu。",
+                                          step + 1, hiddenStats.invalidIndex];
+                    trace.record(message);
+                    return failure(message);
+                }
+                trace.record([NSString stringWithFormat:
+                    @"DiT %zu/8 完成；run=%.3f 秒 read=%.3f 秒 输出峰值 %.8g latent 峰值 %.8g",
+                    step + 1, runEnded - runStarted, readEnded - runEnded,
+                    velocityStats.peak, hiddenStats.peak]);
             }
         }
         trace.record(@"DiT 会话已释放；开始 VAE");
@@ -259,7 +317,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
             // One fixed 192-frame graph is reused for all chunks. Keeping the
             // 64-frame overlap avoids loading the larger 256-frame graph.
             trace.record(@"开始创建唯一的 VAE 192 帧会话");
-            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"]);
+            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace);
             if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
             trace.record(@"VAE 192 帧会话已创建");
             std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
@@ -281,6 +339,15 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                             hidden[frame * kLatentChannels + channel];
                     }
                 }
+                const TensorStats latentStats = tensorStats(latent);
+                if (!latentStats.finite) {
+                    NSString *message = [NSString stringWithFormat:@"VAE %d/%d 输入含非有限值，位置 %zu。",
+                                          chunk + 1, kVaeChunks, latentStats.invalidIndex];
+                    trace.record(message);
+                    return failure(message);
+                }
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 输入峰值 %.8g",
+                              chunk + 1, kVaeChunks, latentStats.peak]);
                 if (!setInput(*vae, "latents", latent.data(), latent.size())) {
                     return failure(@"VAE 192 帧输入不匹配。");
                 }
