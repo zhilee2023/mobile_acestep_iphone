@@ -168,7 +168,7 @@ def main() -> None:
     w4 = w4.T
     correlation = float(np.corrcoef(normalized.reshape(-1), w4.reshape(-1))[0, 1])
     report = {
-        "scope": "same seed/prompt/lyrics/window geometry; FP PyTorch CPU versus W4 MNN CPU",
+        "scope": "same seed/prompt/lyrics/window geometry; all-FP PyTorch CPU versus FP text conditions + MNN W4 DiT/VAE CPU",
         "seed": 17,
         "audio_seconds": 55.0,
         "first_window_frames": FIRST_FRAMES,
