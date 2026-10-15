@@ -139,13 +139,20 @@ void put32(std::vector<uint8_t> &data, size_t offset, uint32_t value) {
     for (int index = 0; index < 4; ++index) data[offset + index] = static_cast<uint8_t>(value >> (8 * index));
 }
 
-NSURL *saveWAV(const std::vector<float> &audio) {
+NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
     float peak = 0.0f;
-    for (float sample : audio) {
-        if (!std::isfinite(sample)) return nil;
+    for (size_t index = 0; index < audio.size(); ++index) {
+        float sample = audio[index];
+        if (!std::isfinite(sample)) {
+            if (reason) *reason = [NSString stringWithFormat:@"VAE 输出含非有限值，样本位置 %zu。", index];
+            return nil;
+        }
         peak = std::max(peak, std::abs(sample));
     }
-    if (peak < 1e-6f) return nil;
+    if (peak < 1e-6f) {
+        if (reason) *reason = [NSString stringWithFormat:@"VAE 输出接近静音，峰值 %.8g。", peak];
+        return nil;
+    }
     const float gain = std::pow(10.0f, -1.0f / 20.0f) / peak;
     constexpr size_t bytes = static_cast<size_t>(kSamples) * 2 * sizeof(int16_t);
     std::vector<uint8_t> wave(44 + bytes);
@@ -171,11 +178,21 @@ NSURL *saveWAV(const std::vector<float> &audio) {
     }
     NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
     NSURL *directory = [documents URLByAppendingPathComponent:@"Generated" isDirectory:YES];
-    if (![NSFileManager.defaultManager createDirectoryAtURL:directory withIntermediateDirectories:YES attributes:nil error:nil]) return nil;
+    NSError *directoryError = nil;
+    if (![NSFileManager.defaultManager createDirectoryAtURL:directory
+                                withIntermediateDirectories:YES attributes:nil error:&directoryError]) {
+        if (reason) *reason = [NSString stringWithFormat:@"创建音频目录失败：%@", directoryError.localizedDescription];
+        return nil;
+    }
     NSString *filename = [NSString stringWithFormat:@"fixed-30s-w4-%@.wav", [[NSUUID UUID] UUIDString]];
     NSURL *target = [directory URLByAppendingPathComponent:filename];
-    NSData *data = [NSData dataWithBytes:wave.data() length:wave.size()];
-    return [data writeToURL:target atomically:YES] ? target : nil;
+    NSData *data = [NSData dataWithBytesNoCopy:wave.data() length:wave.size() freeWhenDone:NO];
+    NSError *writeError = nil;
+    if (![data writeToURL:target options:NSDataWritingAtomic error:&writeError]) {
+        if (reason) *reason = [NSString stringWithFormat:@"写入 WAV 失败：%@", writeError.localizedDescription];
+        return nil;
+    }
+    return target;
 }
 } // namespace
 
@@ -276,18 +293,35 @@ NSURL *saveWAV(const std::vector<float> &audio) {
                 }
                 const int coreSamples = (coreEnd - coreStart) * kUpsample;
                 const int offset = (coreStart - winStart) * kUpsample;
+                float corePeak = 0.0f;
                 for (int channel = 0; channel < 2; ++channel) {
                     const float *source = decoded.data() + channel * kVaeWindowFrames * kUpsample + offset;
+                    for (int sample = 0; sample < coreSamples; ++sample) {
+                        if (!std::isfinite(source[sample])) {
+                            NSString *message = [NSString stringWithFormat:
+                                @"VAE %d/%d 输出含非有限值，声道 %d，段内样本 %d。",
+                                chunk + 1, kVaeChunks, channel, sample];
+                            trace.record(message);
+                            return failure(message);
+                        }
+                        corePeak = std::max(corePeak, std::abs(source[sample]));
+                    }
                     float *target = audio.data() + channel * kSamples + written;
                     std::memcpy(target, source, static_cast<size_t>(coreSamples) * sizeof(float));
                 }
                 written += coreSamples;
-                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成", chunk + 1, kVaeChunks]);
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成；输出峰值 %.8g",
+                              chunk + 1, kVaeChunks, corePeak]);
             }
         }
         if (written != kSamples) return failure(@"VAE 拼接后的音频长度不等于 30 秒。");
-        NSURL *target = saveWAV(audio);
-        if (!target) return failure(@"音频无效或写入 WAV 失败。");
+        NSString *saveError = nil;
+        NSURL *target = saveWAV(audio, &saveError);
+        if (!target) {
+            NSString *message = saveError ?: @"写入 WAV 失败，系统未提供原因。";
+            trace.record(message);
+            return failure(message);
+        }
         trace.record(@"WAV 已保存；生成完成");
         return @{ @"success": @YES, @"message": @"iPhone 已完成 DiT 八步及 VAE 十二段推理。歌词条件为预计算固定样例。",
                   @"wavPath": target.path, @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started),
