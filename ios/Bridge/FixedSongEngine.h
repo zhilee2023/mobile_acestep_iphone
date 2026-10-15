@@ -4,6 +4,7 @@ NS_ASSUME_NONNULL_BEGIN
 
 @interface FixedSongEngine : NSObject
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)generateOptimizedAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)probeTwoStepLowAtDirectory:(NSString *)directory;
 @end

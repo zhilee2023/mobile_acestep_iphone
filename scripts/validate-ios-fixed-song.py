@@ -112,6 +112,37 @@ def main() -> None:
         reused_written += samples
         print(f"VAE reused {index + 1}/12: samples={samples}", flush=True)
     assert reused_written == 1_440_000, reused_written
+    # Test a cheaper fixed 192-frame schedule: 128 core frames with 32-frame
+    # context on each side. Keep the same VAE session and compare sample-wise.
+    faster = np.zeros_like(output)
+    faster_written = 0
+    for index in range(math.ceil(750 / 128)):
+        core_start = index * 128
+        core_end = min(core_start + 128, 750)
+        win_start = min(max(core_start - 32, 0), 750 - 192)
+        win_end = win_start + 192
+        assert win_start <= core_start < core_end <= win_end
+        write_input(vae192, vae192_handle, "latents", latents[:, :, win_start:win_end].copy())
+        vae192.runSession(vae192_handle)
+        decoded = read_output(vae192, vae192_handle)[0, :, :, 0]
+        start = (core_start - win_start) * 1920
+        samples = (core_end - core_start) * 1920
+        faster[:, faster_written:faster_written + samples] = decoded[:, start:start + samples]
+        faster_written += samples
+        print(f"VAE faster {index + 1}/6: samples={samples}", flush=True)
+    assert faster_written == 1_440_000, faster_written
+    faster_relative_l2 = float(np.linalg.norm(faster - reused) / np.linalg.norm(reused))
+    faster_correlation = float(np.corrcoef(faster.reshape(-1), reused.reshape(-1))[0, 1])
+    boundary_errors = []
+    for frame in range(128, 750, 128):
+        sample = frame * 1920
+        width = 2400  # 50 ms on each side of a join.
+        reference = reused[:, sample - width:sample + width]
+        candidate = faster[:, sample - width:sample + width]
+        boundary_errors.append(float(np.linalg.norm(candidate - reference) / max(np.linalg.norm(reference), 1e-12)))
+    assert faster_relative_l2 < 1e-4, faster_relative_l2
+    assert np.isfinite(faster).all()
+    assert max(boundary_errors) < 1e-4, boundary_errors
     relative_l2 = float(np.linalg.norm(reused - output) / np.linalg.norm(output))
     correlation = float(np.corrcoef(reused.reshape(-1), output.reshape(-1))[0, 1])
     peak = float(np.max(np.abs(output)))
@@ -125,11 +156,20 @@ def main() -> None:
         reused *= np.float32(10 ** (-1.0 / 20.0) / reused_peak)
     reused_target = OUT / "fixed-vocal-mnn-cpu-reused-192.wav"
     sf.write(reused_target, reused.T, 48_000, subtype="FLOAT")
+    faster_peak = float(np.max(np.abs(faster)))
+    if faster_peak > 1e-6:
+        faster *= np.float32(10 ** (-1.0 / 20.0) / faster_peak)
+    faster_target = OUT / "fixed-vocal-mnn-cpu-faster-192.wav"
+    sf.write(faster_target, faster.T, 48_000, subtype="FLOAT")
     report = {"first_step_relative_l2": first_step_error, "samples": written,
               "sample_rate": 48000, "duration_seconds": 30, "peak": float(np.max(np.abs(output))),
               "wav": str(target), "reused_192_wav": str(reused_target),
               "reused_192_relative_l2_vs_original_vae": relative_l2,
-              "reused_192_correlation_vs_original_vae": correlation}
+              "reused_192_correlation_vs_original_vae": correlation,
+              "faster_192_wav": str(faster_target),
+              "faster_192_relative_l2_vs_reused_192": faster_relative_l2,
+              "faster_192_correlation_vs_reused_192": faster_correlation,
+              "faster_192_boundary_relative_l2": boundary_errors}
     (OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2), flush=True)
 

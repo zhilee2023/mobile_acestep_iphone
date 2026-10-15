@@ -156,5 +156,9 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runFullSerialSongAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)generateOptimizedSerialSongAtDirectory:(NSString *)directory {
+    return [EncoderBenchmark runOptimizedFullSerialAtDirectory:directory];
+}
+
 @end
 

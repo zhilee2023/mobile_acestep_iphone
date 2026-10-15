@@ -11,3 +11,7 @@ v15 增加“Encoder → DiT 串行内存”按钮：完整运行独立 Encoder 
 v15 真机串行日志：Encoder 函数返回时 footprint 1,621 MB、可用 1,599 MB；1 秒后 676/2,544 MB；5 秒后 50/3,171 MB。内存门槛通过，DiT High 两步返回成功，最终 footprint 82 MB。这证明该次测试中模型先后加载可行；两步 DiT 的峰值和相对 CPU/W4 误差应从 `last-inference.log` 核对，不能仅凭串行总日志推断。
 
 v16 增加完整串行按钮：Encoder 只做一次 107-token 前向并释放，不再重复三次预热；等待 5 秒检查释放情况，然后运行原有的 DiT High 八步与 VAE Low 十二段，写出新的 30 秒 WAV。端到端总耗时和 RTF 包含这 5 秒安全等待；日志分别为 `encoder-full-serial.log`、`encoder-benchmark.log` 和 `last-inference.log`。加载 DiT 前要求可用内存至少 2,400 MB；DiT 释放后加载 VAE 前至少 1,700 MB。这两个门槛均来自既有单机采样峰值和约 0.5 GB 余量，不是 iOS 内存保证。Encoder 与 DiT 仍使用各自固定输入，Encoder 输出**没有**作为 DiT 条件输入；本测试验证三组件串行部署与可播放 WAV，不验证任意歌词。
+
+v16 真机结果：Encoder → DiT 八步 → VAE 十二段顺序完成，30 秒 WAV 的总耗时 104.450 秒（含 5 秒内存回收观察），RTF 3.482。v17 在 UI 仅保留完整生成入口、播放、模型状态、RTF 与当前日志分享；单步、两步、独立 Encoder 测速及旧串行测试入口已从 UI 移除，底层诊断方法暂保留用于回归。优化版 Encoder 释放后每 250 ms 检查一次可用内存，连续两次达到 2,400 MB 才加载 DiT，最长观察 5 秒，否则安全停止。VAE 仍只创建一个 192 帧会话，但每段取 128 帧主体、两侧各 32 帧上下文，六段拼成 750 帧。Windows CPU 同图对照旧的 64+64+64 布局，整首波形相对 L2 为 9.45e-7，相关系数约 0.99999999999955；真机新版本的耗时和音质仍需实测。日志为 `encoder-optimized-serial.log`、`encoder-benchmark.log` 和 `last-inference.log`。
+
+关于 VAE 会话约 47 秒：此前真机日志中读取 VAE 模型仅约 0.055 秒，慢在 `createSession`。MNN 的会话创建会执行初始 resize；所用版本的 Metal 后端包含着色器／计算管线创建、卷积算子的形状准备及可能的调优。Windows CPU 上同一 192 帧 VAE 会话创建约 0.368 秒，DiT 约 3.703 秒，说明 47 秒不是由 VAE 文件大小或节点数量单独决定，较可能是该图在 iPhone Metal 后端的准备成本；确切热点还需真机 profiler 或分段计时确认。六段优化只减少执行次数，不能消除这 47 秒初始化。

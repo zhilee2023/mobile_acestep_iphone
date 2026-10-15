@@ -13,16 +13,12 @@ struct ContentView: View {
     @EnvironmentObject private var modelStore: ModelStore
     @EnvironmentObject private var metricsStore: GenerationMetricsStore
     @StateObject private var studio = SongStudioStore()
-    @StateObject private var probe = DeviceProbeStore()
     @State private var importingModels = false
     @State private var importingLyrics = false
     @State private var importingAudio = false
     @State private var showsModelDetails = false
     @State private var isGenerating = false
-    @State private var isTestingDiT = false
-    @State private var isBenchmarkingEncoder = false
-    @State private var encoderBenchMessage = "尚未测试 Encoder"
-    @State private var generationMessage = "请先完成 DiT 真机单步测试。"
+    @State private var generationMessage = "模型文件齐全后即可生成固定样例。"
     @State private var generationTrace = "尚无诊断记录"
 
     private var traceURL: URL {
@@ -30,19 +26,9 @@ struct ContentView: View {
             .appendingPathComponent("Generated/last-inference.log")
     }
 
-    private var encoderTraceURL: URL {
+    private var optimizedSerialTraceURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Generated/encoder-benchmark.log")
-    }
-
-    private var serialTraceURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Generated/encoder-dit-serial.log")
-    }
-
-    private var fullSerialTraceURL: URL {
-        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
-            .appendingPathComponent("Generated/encoder-full-serial.log")
+            .appendingPathComponent("Generated/encoder-optimized-serial.log")
     }
 
     var body: some View {
@@ -54,8 +40,6 @@ struct ContentView: View {
                     songCard
                     lyricsCard
                     modelCard
-                    probeCard
-                    encoderCard
                     generationCard
                     playerCard
                     metricsCard
@@ -235,180 +219,36 @@ struct ContentView: View {
         .studioCard()
     }
 
-    private var probeCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            heading("端侧推理验证", icon: "iphone.radiowaves.left.and.right")
-            Text("先在 iPhone 上运行一次真实的 MNN W4 DiT 前向。它是 8 步歌曲生成的第一关，不会输出歌曲。")
-                .font(.subheadline).foregroundStyle(StudioPalette.secondary)
-            Button { probe.run() } label: {
-                HStack {
-                    if probe.isRunning { ProgressView().tint(StudioPalette.background) }
-                    Text(probe.isRunning ? "正在真机运行…" : "运行 DiT 单步测试")
-                    Spacer()
-                    Image(systemName: "arrow.up.right")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || probe.isRunning || isBenchmarkingEncoder)
-            Text(probe.message).font(.caption).foregroundStyle(StudioPalette.secondary)
-            if let seconds = probe.elapsedSeconds, let error = probe.relativeL2 {
-                HStack {
-                    metric("单步耗时", String(format: "%.2f 秒", seconds))
-                    Spacer()
-                    metric("相对 L2", String(format: "%.3f", error))
-                }
-            }
-            Label("单步只是第一关；整首生成须独立完成。", systemImage: "info.circle")
-                .font(.caption2).foregroundStyle(.orange)
-        }
-        .studioCard()
-    }
-
-    private var encoderCard: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            heading("文字编码器测速", icon: "text.magnifyingglass")
-            Text("测现有 W4 Encoder 的固定 107-token 全序列前向：会话创建、首次运行、预热后平均耗时和内存。当前图没有 KV cache，不能测逐 token decode。")
-                .font(.subheadline).foregroundStyle(StudioPalette.secondary)
-            Button { runEncoderBenchmark() } label: {
-                HStack {
-                    if isBenchmarkingEncoder { ProgressView().tint(StudioPalette.background) }
-                    Text(isBenchmarkingEncoder ? "正在真机测速…" : "测 Encoder 全序列前向")
-                    Spacer()
-                    Image(systemName: "timer")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Button { runEncoderDiTSerialProbe() } label: {
-                HStack {
-                    if isBenchmarkingEncoder { ProgressView().tint(StudioPalette.background) }
-                    Text(isBenchmarkingEncoder ? "正在串行测试…" : "测 Encoder → DiT 串行内存")
-                    Spacer()
-                    Image(systemName: "arrow.right")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Text("Encoder 释放后等待 5 秒；内存不足时不加载 DiT。DiT 仅跑固定条件前两步，不生成音频，也不把 Encoder 输出接到歌曲。")
-                .font(.caption2).foregroundStyle(.orange)
-            Text(encoderBenchMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
-            if FileManager.default.fileExists(atPath: encoderTraceURL.path) {
-                ShareLink(item: encoderTraceURL) {
-                    Label("分享 Encoder 测速日志", systemImage: "square.and.arrow.up")
-                }
-                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
-            }
-            if FileManager.default.fileExists(atPath: serialTraceURL.path) {
-                ShareLink(item: serialTraceURL) {
-                    Label("分享串行内存日志", systemImage: "square.and.arrow.up")
-                }
-                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
-            }
-        }
-        .studioCard()
-    }
-
-    private func runEncoderBenchmark() {
-        guard !isBenchmarkingEncoder && !isGenerating && !isTestingDiT else { return }
-        isBenchmarkingEncoder = true
-        encoderBenchMessage = "正在运行 107-token 固定输入，请保持 App 在前台…"
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.runEncoderBenchmark(atDirectory: directory)
-            DispatchQueue.main.async {
-                self.isBenchmarkingEncoder = false
-                self.encoderBenchMessage = result["message"] as? String ?? "Encoder 测速未返回结果。"
-                if let cold = (result["coldSeconds"] as? NSNumber)?.doubleValue,
-                   let warm = (result["warmSeconds"] as? NSNumber)?.doubleValue,
-                   let peak = (result["sampledPeakMB"] as? NSNumber)?.doubleValue {
-                    self.encoderBenchMessage += String(format: " 首次 %.2f 秒，预热后 %.2f 秒，采样峰值 %.0f MB。", cold, warm, peak)
-                }
-            }
-        }
-    }
-
-    private func runEncoderDiTSerialProbe() {
-        guard !isBenchmarkingEncoder && !isGenerating && !isTestingDiT else { return }
-        isBenchmarkingEncoder = true
-        encoderBenchMessage = "正在串行运行 Encoder、等待内存释放并测试 DiT，请保持 App 在前台…"
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.runEncoderDiTSerialProbe(atDirectory: directory)
-            DispatchQueue.main.async {
-                self.isBenchmarkingEncoder = false
-                self.encoderBenchMessage = result["message"] as? String ?? "串行测试未返回结果。"
-                self.refreshGenerationTrace()
-            }
-        }
-    }
-
     private var generationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
-            Text("固定条件样例：手机运行 8 步 DiT 与 12 段 VAE，输出 30 秒 WAV。VAE 只建立一次会话；上方编辑的歌词暂不会参与生成。")
+            Text("手机依次运行 Encoder、DiT 八步和 VAE 六段，输出 30 秒 WAV。当前仍使用固定歌词条件。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
-            Button { runTwoStepProbe(highPrecision: false) } label: {
-                HStack {
-                    if isTestingDiT { ProgressView().tint(StudioPalette.background) }
-                    Text(isTestingDiT ? "正在诊断 DiT…" : "诊断 DiT 前两步 · Metal Low")
-                    Spacer()
-                    Image(systemName: "waveform.path.ecg")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Button { runTwoStepProbe(highPrecision: true) } label: {
-                HStack {
-                    Text("诊断 DiT 前两步 · Metal High")
-                    Spacer()
-                    Image(systemName: "waveform.path.ecg")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Text("先测 Low，再测 High；每次只测两步，不运行 VAE，也不会生成音频。")
-                .font(.caption2).foregroundStyle(.orange)
-            Button { generateFixedSong() } label: {
+            Button { generateOptimizedSerialSong() } label: {
                 HStack {
                     if isGenerating { ProgressView().tint(StudioPalette.background) }
-                    Text(isGenerating ? "手机正在生成…" : "生成固定样例 · 30 秒")
+                    Text(isGenerating ? "手机正在生成…" : "生成 30 秒样例")
                     Spacer()
                     Image(systemName: "waveform")
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Button { generateFullSerialSong() } label: {
-                HStack {
-                    if isGenerating { ProgressView().tint(StudioPalette.background) }
-                    Text(isGenerating ? "手机正在串行生成…" : "测 Encoder → DiT → VAE 整首串行")
-                    Spacer()
-                    Image(systemName: "waveform.badge.magnifyingglass")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
-            Text("Encoder 只跑一次并释放；内存回落后执行固定条件的 DiT 八步、VAE 十二段，生成 30 秒 WAV。仍未接通编辑的歌词。")
+            .disabled(!modelStore.allModelsPresent || isGenerating)
+            Text("Encoder 输出尚未接入 DiT；编辑的歌词不会改变本次固定样例。")
                 .font(.caption2).foregroundStyle(.orange)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
             if FileManager.default.fileExists(atPath: traceURL.path) {
                 ShareLink(item: traceURL) {
-                    Label("分享诊断日志", systemImage: "square.and.arrow.up")
+                    Label("分享推理日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
-            if FileManager.default.fileExists(atPath: fullSerialTraceURL.path) {
-                ShareLink(item: fullSerialTraceURL) {
-                    Label("分享完整串行日志", systemImage: "square.and.arrow.up")
+            if FileManager.default.fileExists(atPath: optimizedSerialTraceURL.path) {
+                ShareLink(item: optimizedSerialTraceURL) {
+                    Label("分享生成耗时日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
@@ -417,33 +257,29 @@ struct ContentView: View {
     }
 
     private func refreshGenerationTrace() {
-        guard let content = try? String(contentsOf: traceURL, encoding: .utf8),
+        let candidates = [optimizedSerialTraceURL, traceURL]
+        let latest = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
+            .max { left, right in
+                let leftDate = (try? left.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                let rightDate = (try? right.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
+                return leftDate < rightDate
+            }
+        guard let latest,
+              let content = try? String(contentsOf: latest, encoding: .utf8),
               let line = content.split(whereSeparator: \.isNewline).last else { return }
         let fields = line.split(separator: "\t")
         generationTrace = fields.dropFirst().joined(separator: " · ")
     }
 
-    private func generateFixedSong() {
-        generateSong(fullSerial: false)
-    }
-
-    private func generateFullSerialSong() {
-        generateSong(fullSerial: true)
-    }
-
-    private func generateSong(fullSerial: Bool) {
+    private func generateOptimizedSerialSong() {
         guard !isGenerating else { return }
         isGenerating = true
-        generationMessage = fullSerial
-            ? "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
-            : "正在手机上执行 MNN 推理，请保持 App 在前台…"
+        generationMessage = "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = fullSerial
-                ? AceBridge.generateFullSerialSong(atDirectory: directory)
-                : AceBridge.generateFixedSong(atDirectory: directory)
+            let result = AceBridge.generateOptimizedSerialSong(atDirectory: directory)
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
@@ -461,24 +297,6 @@ struct ContentView: View {
                 } catch {
                     self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
                 }
-            }
-        }
-    }
-
-    private func runTwoStepProbe(highPrecision: Bool) {
-        guard !isTestingDiT && !isGenerating else { return }
-        isTestingDiT = true
-        generationMessage = "正在真机运行 DiT Metal \(highPrecision ? "High" : "Low") 两步诊断…"
-        generationTrace = "正在启动…"
-        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
-        DispatchQueue.global(qos: .userInitiated).async {
-            let result = highPrecision
-                ? AceBridge.runTwoStepHighProbe(atDirectory: directory)
-                : AceBridge.runTwoStepLowProbe(atDirectory: directory)
-            DispatchQueue.main.async {
-                self.isTestingDiT = false
-                self.refreshGenerationTrace()
-                self.generationMessage = result["message"] as? String ?? "诊断未返回结果。"
             }
         }
     }

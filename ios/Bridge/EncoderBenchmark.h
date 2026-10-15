@@ -6,6 +6,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runSerialDiTAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)runOptimizedFullSerialAtDirectory:(NSString *)directory;
 @end
 
 NS_ASSUME_NONNULL_END

@@ -123,13 +123,23 @@ bool readOutput(Graph &graph, float &peak) {
 
 @interface EncoderBenchmark ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory warmRuns:(size_t)warmRuns;
++ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized;
 @end
 
 @implementation EncoderBenchmark
 
 + (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory {
-    Trace trace("encoder-full-serial.log",
-                @"开始：Encoder 一次前向 → 释放 → DiT 八步 → VAE 十二段 → 30 秒 WAV；固定输入");
+    return [self runFullSerialSongAtDirectory:directory optimized:NO];
+}
+
++ (NSDictionary<NSString *, id> *)runOptimizedFullSerialAtDirectory:(NSString *)directory {
+    return [self runFullSerialSongAtDirectory:directory optimized:YES];
+}
+
++ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized {
+    Trace trace(optimized ? "encoder-optimized-serial.log" : "encoder-full-serial.log",
+                optimized ? @"开始：Encoder 一次前向 → 释放 → 自适应内存门槛 → DiT 八步 → VAE 六段 → 30 秒 WAV；固定输入"
+                          : @"开始：Encoder 一次前向 → 释放 → DiT 八步 → VAE 十二段 → 30 秒 WAV；固定输入");
     const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     NSDictionary<NSString *, id> *encoder = [self runAtDirectory:directory warmRuns:0];
     trace.record(@"Encoder 测试函数已返回；立即采样内存");
@@ -137,18 +147,35 @@ bool readOutput(Graph &graph, float &peak) {
         trace.record([NSString stringWithFormat:@"停止：Encoder 失败；%@", encoder[@"message"] ?: @"未知原因"]);
         return encoder;
     }
-    usleep(1000000);
-    trace.record(@"Encoder 释放后 1 秒");
-    usleep(4000000);
-    trace.record(@"Encoder 释放后 5 秒");
+    CFAbsoluteTime recoveryStarted = CFAbsoluteTimeGetCurrent();
+    if (optimized) {
+        int consecutivePasses = 0;
+        while (CFAbsoluteTimeGetCurrent() - recoveryStarted < 5.0) {
+            const size_t availableNow = trace.availableBytes();
+            consecutivePasses = availableNow >= kSerialDiTRequiredBytes ? consecutivePasses + 1 : 0;
+            trace.record([NSString stringWithFormat:@"Encoder 释放后内存观察：%.2f 秒；连续达标 %d/2",
+                          CFAbsoluteTimeGetCurrent() - recoveryStarted, consecutivePasses]);
+            if (consecutivePasses >= 2) break;
+            usleep(250000);
+        }
+    } else {
+        usleep(1000000);
+        trace.record(@"Encoder 释放后 1 秒");
+        usleep(4000000);
+        trace.record(@"Encoder 释放后 5 秒");
+    }
     const size_t available = trace.availableBytes();
     if (available < kSerialDiTRequiredBytes) {
         trace.record([NSString stringWithFormat:@"安全停止：DiT 需至少 %.0f MB 可用；当前 %.0f MB，未加载 DiT",
                       kSerialDiTRequiredBytes / 1000000.0, available / 1000000.0]);
         return failure(@"Encoder 已完成，但内存余量不足；未启动 DiT。请分享完整串行日志。");
     }
-    trace.record(@"内存门槛通过；开始 DiT 八步与 VAE 十二段（详见 last-inference.log）");
-    NSDictionary<NSString *, id> *song = [FixedSongEngine generateAtDirectory:directory];
+    const double recoverySeconds = CFAbsoluteTimeGetCurrent() - recoveryStarted;
+    trace.record([NSString stringWithFormat:@"内存门槛通过；观察 %.3f 秒；开始 DiT 八步与 VAE %d 段（详见 last-inference.log）",
+                  recoverySeconds, optimized ? 6 : 12]);
+    NSDictionary<NSString *, id> *song = optimized
+        ? [FixedSongEngine generateOptimizedAtDirectory:directory]
+        : [FixedSongEngine generateAtDirectory:directory];
     trace.record([NSString stringWithFormat:@"DiT/VAE 已返回：%@；%@",
                   [song[@"success"] boolValue] ? @"成功" : @"失败", song[@"message"] ?: @"无消息"]);
     if (![song[@"success"] boolValue]) {
@@ -160,8 +187,8 @@ bool readOutput(Graph &graph, float &peak) {
         return failure(@"推理报告成功，但没有返回 WAV 路径。请分享完整串行日志。");
     }
     const double elapsed = CFAbsoluteTimeGetCurrent() - started;
-    trace.record([NSString stringWithFormat:@"完整串行完成；总耗时 %.3f 秒（含 5 秒内存回收观察）；30 秒音频 RTF %.3f；歌词条件仍为固定样例",
-                  elapsed, elapsed / 30.0]);
+    trace.record([NSString stringWithFormat:@"%@串行完成；总耗时 %.3f 秒（内存回收观察 %.3f 秒）；30 秒音频 RTF %.3f；歌词条件仍为固定样例",
+                  optimized ? @"优化" : @"完整", elapsed, recoverySeconds, elapsed / 30.0]);
     return @{ @"success": @YES, @"wavPath": wavPath,
               @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
               @"backend": @"Encoder→DiT→VAE 串行 / Metal 请求、CPU 回退可能",
