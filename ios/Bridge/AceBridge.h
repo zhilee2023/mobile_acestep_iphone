@@ -8,6 +8,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runTwoStepHighProbeAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runTwoStepLowProbeAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)runEncoderBenchmarkAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)runEncoderDiTSerialProbeAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateFixedSongAtDirectory:(NSString *)directory;
 @end
 

@@ -35,6 +35,11 @@ struct ContentView: View {
             .appendingPathComponent("Generated/encoder-benchmark.log")
     }
 
+    private var serialTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/encoder-dit-serial.log")
+    }
+
     var body: some View {
         ZStack {
             StudioPalette.background.ignoresSafeArea()
@@ -271,10 +276,29 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
+            Button { runEncoderDiTSerialProbe() } label: {
+                HStack {
+                    if isBenchmarkingEncoder { ProgressView().tint(StudioPalette.background) }
+                    Text(isBenchmarkingEncoder ? "正在串行测试…" : "测 Encoder → DiT 串行内存")
+                    Spacer()
+                    Image(systemName: "arrow.right")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
+            Text("Encoder 释放后等待 5 秒；内存不足时不加载 DiT。DiT 仅跑固定条件前两步，不生成音频，也不把 Encoder 输出接到歌曲。")
+                .font(.caption2).foregroundStyle(.orange)
             Text(encoderBenchMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             if FileManager.default.fileExists(atPath: encoderTraceURL.path) {
                 ShareLink(item: encoderTraceURL) {
                     Label("分享 Encoder 测速日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: serialTraceURL.path) {
+                ShareLink(item: serialTraceURL) {
+                    Label("分享串行内存日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
@@ -297,6 +321,21 @@ struct ContentView: View {
                    let peak = (result["sampledPeakMB"] as? NSNumber)?.doubleValue {
                     self.encoderBenchMessage += String(format: " 首次 %.2f 秒，预热后 %.2f 秒，采样峰值 %.0f MB。", cold, warm, peak)
                 }
+            }
+        }
+    }
+
+    private func runEncoderDiTSerialProbe() {
+        guard !isBenchmarkingEncoder && !isGenerating && !isTestingDiT else { return }
+        isBenchmarkingEncoder = true
+        encoderBenchMessage = "正在串行运行 Encoder、等待内存释放并测试 DiT，请保持 App 在前台…"
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.runEncoderDiTSerialProbe(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isBenchmarkingEncoder = false
+                self.encoderBenchMessage = result["message"] as? String ?? "串行测试未返回结果。"
+                self.refreshGenerationTrace()
             }
         }
     }

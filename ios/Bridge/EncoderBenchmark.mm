@@ -1,4 +1,5 @@
 #import "EncoderBenchmark.h"
+#import "FixedSongEngine.h"
 #import <MNN/Interpreter.hpp>
 #import <mach/mach.h>
 #import <os/proc.h>
@@ -16,6 +17,9 @@ constexpr size_t kTokens = 107;
 constexpr size_t kHiddenSize = 1024;
 constexpr size_t kWarmRuns = 3;
 constexpr size_t kMinimumAvailableBytes = 512ULL * 1024 * 1024;
+// The existing iPhone DiT High probe reached ~1.97 GB footprint from a ~72 MB
+// baseline. Require at least ~1.9 GB for its growth plus ~0.5 GB margin.
+constexpr size_t kSerialDiTRequiredBytes = 2400000000ULL;
 
 NSDictionary<NSString *, id> *failure(NSString *message) {
     return @{ @"success": @NO, @"message": message };
@@ -25,15 +29,16 @@ struct Trace {
     FILE *file = nullptr;
     uint64_t sampledPeak = 0;
 
-    Trace() {
+    Trace(const char *filename = "encoder-benchmark.log",
+          NSString *opening = @"开始：Qwen3-Embedding W4；107-token 固定输入；Metal Low／低内存；无 KV-cache decode") {
         NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                  inDomains:NSUserDomainMask].firstObject;
         NSURL *directory = [documents URLByAppendingPathComponent:@"Generated" isDirectory:YES];
         if (![NSFileManager.defaultManager createDirectoryAtURL:directory
                                     withIntermediateDirectories:YES attributes:nil error:nil]) return;
-        NSURL *url = [directory URLByAppendingPathComponent:@"encoder-benchmark.log"];
+        NSURL *url = [directory URLByAppendingPathComponent:[NSString stringWithUTF8String:filename]];
         file = std::fopen(url.fileSystemRepresentation, "w");
-        record(@"开始：Qwen3-Embedding W4；107-token 固定输入；Metal Low／低内存；无 KV-cache decode");
+        record(opening);
     }
 
     ~Trace() { if (file) std::fclose(file); }
@@ -117,6 +122,36 @@ bool readOutput(Graph &graph, float &peak) {
 } // namespace
 
 @implementation EncoderBenchmark
+
++ (NSDictionary<NSString *, id> *)runSerialDiTAtDirectory:(NSString *)directory {
+    Trace trace("encoder-dit-serial.log",
+                @"开始：Encoder 全序列前向 → 释放 → DiT Metal High 两步；固定输入，不运行 VAE");
+    NSDictionary<NSString *, id> *encoder = [self runAtDirectory:directory];
+    trace.record(@"Encoder 测试函数已返回；立即采样内存");
+    if (![encoder[@"success"] boolValue]) {
+        trace.record([NSString stringWithFormat:@"停止：Encoder 失败；%@", encoder[@"message"] ?: @"未知原因"]);
+        return encoder;
+    }
+    usleep(1000000);
+    trace.record(@"Encoder 释放后 1 秒");
+    usleep(4000000);
+    trace.record(@"Encoder 释放后 5 秒");
+    const size_t available = trace.availableBytes();
+    if (available < kSerialDiTRequiredBytes) {
+        trace.record([NSString stringWithFormat:@"安全停止：DiT 需至少 %.0f MB 可用；当前 %.0f MB，未加载 DiT",
+                      kSerialDiTRequiredBytes / 1000000.0, available / 1000000.0]);
+        return failure(@"Encoder 已完成；释放 5 秒后内存余量仍不足，未启动 DiT。请分享串行和 Encoder 日志。");
+    }
+    trace.record(@"内存门槛通过；开始 DiT Metal High 两步（详见 last-inference.log）");
+    NSDictionary<NSString *, id> *dit = [FixedSongEngine probeTwoStepHighAtDirectory:directory];
+    trace.record([NSString stringWithFormat:@"DiT 已返回：%@；%@",
+                  [dit[@"success"] boolValue] ? @"成功" : @"失败", dit[@"message"] ?: @"无消息"]);
+    if (![dit[@"success"] boolValue]) {
+        return failure(@"Encoder 已完成，DiT 两步未通过。请分享串行和 DiT 日志。");
+    }
+    return @{ @"success": @YES,
+              @"message": @"Encoder 释放后，DiT Metal High 两步串行测试完成；测试使用各自固定输入，尚未连接歌词条件。请分享串行和 DiT 日志。" };
+}
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory {
     @autoreleasepool {

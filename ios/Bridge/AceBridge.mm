@@ -148,5 +148,9 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)runEncoderDiTSerialProbeAtDirectory:(NSString *)directory {
+    return [EncoderBenchmark runSerialDiTAtDirectory:directory];
+}
+
 @end
 
