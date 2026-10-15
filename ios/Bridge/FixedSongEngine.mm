@@ -44,7 +44,7 @@ struct InferenceTrace {
         file = std::fopen(url.fileSystemRepresentation, "w");
         record(twoStepProbe ? (highPrecision ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
                                              : @"开始：DiT 两步诊断；Metal Low、低内存模式；不运行 VAE")
-                            : @"开始：30 秒固定样例；DiT Metal Low、VAE Metal Low、低内存模式");
+                            : @"开始：30 秒固定样例；DiT Metal High、VAE Metal Low、低内存模式");
     }
 
     ~InferenceTrace() {
@@ -235,7 +235,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
 @implementation FixedSongEngine
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
