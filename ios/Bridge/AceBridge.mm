@@ -1,5 +1,6 @@
 #import "AceBridge.h"
 #import "FixedSongEngine.h"
+#import "EncoderBenchmark.h"
 #import <MNN/Interpreter.hpp>
 
 #include <algorithm>
@@ -141,6 +142,10 @@ NSData *probeData(NSString *name) {
 
 + (NSDictionary<NSString *, id> *)runTwoStepLowProbeAtDirectory:(NSString *)directory {
     return [FixedSongEngine probeTwoStepLowAtDirectory:directory];
+}
+
++ (NSDictionary<NSString *, id> *)runEncoderBenchmarkAtDirectory:(NSString *)directory {
+    return [EncoderBenchmark runAtDirectory:directory];
 }
 
 @end

@@ -20,12 +20,19 @@ struct ContentView: View {
     @State private var showsModelDetails = false
     @State private var isGenerating = false
     @State private var isTestingDiT = false
+    @State private var isBenchmarkingEncoder = false
+    @State private var encoderBenchMessage = "尚未测试 Encoder"
     @State private var generationMessage = "请先完成 DiT 真机单步测试。"
     @State private var generationTrace = "尚无诊断记录"
 
     private var traceURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Generated/last-inference.log")
+    }
+
+    private var encoderTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/encoder-benchmark.log")
     }
 
     var body: some View {
@@ -38,6 +45,7 @@ struct ContentView: View {
                     lyricsCard
                     modelCard
                     probeCard
+                    encoderCard
                     generationCard
                     playerCard
                     metricsCard
@@ -232,7 +240,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || probe.isRunning)
+            .disabled(!modelStore.allModelsPresent || probe.isRunning || isBenchmarkingEncoder)
             Text(probe.message).font(.caption).foregroundStyle(StudioPalette.secondary)
             if let seconds = probe.elapsedSeconds, let error = probe.relativeL2 {
                 HStack {
@@ -245,6 +253,52 @@ struct ContentView: View {
                 .font(.caption2).foregroundStyle(.orange)
         }
         .studioCard()
+    }
+
+    private var encoderCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            heading("文字编码器测速", icon: "text.magnifyingglass")
+            Text("测现有 W4 Encoder 的固定 107-token 全序列前向：会话创建、首次运行、预热后平均耗时和内存。当前图没有 KV cache，不能测逐 token decode。")
+                .font(.subheadline).foregroundStyle(StudioPalette.secondary)
+            Button { runEncoderBenchmark() } label: {
+                HStack {
+                    if isBenchmarkingEncoder { ProgressView().tint(StudioPalette.background) }
+                    Text(isBenchmarkingEncoder ? "正在真机测速…" : "测 Encoder 全序列前向")
+                    Spacer()
+                    Image(systemName: "timer")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
+            Text(encoderBenchMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
+            if FileManager.default.fileExists(atPath: encoderTraceURL.path) {
+                ShareLink(item: encoderTraceURL) {
+                    Label("分享 Encoder 测速日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+        }
+        .studioCard()
+    }
+
+    private func runEncoderBenchmark() {
+        guard !isBenchmarkingEncoder && !isGenerating && !isTestingDiT else { return }
+        isBenchmarkingEncoder = true
+        encoderBenchMessage = "正在运行 107-token 固定输入，请保持 App 在前台…"
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.runEncoderBenchmark(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isBenchmarkingEncoder = false
+                self.encoderBenchMessage = result["message"] as? String ?? "Encoder 测速未返回结果。"
+                if let cold = (result["coldSeconds"] as? NSNumber)?.doubleValue,
+                   let warm = (result["warmSeconds"] as? NSNumber)?.doubleValue,
+                   let peak = (result["sampledPeakMB"] as? NSNumber)?.doubleValue {
+                    self.encoderBenchMessage += String(format: " 首次 %.2f 秒，预热后 %.2f 秒，采样峰值 %.0f MB。", cold, warm, peak)
+                }
+            }
+        }
     }
 
     private var generationCard: some View {
@@ -262,7 +316,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT)
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
             Button { runTwoStepProbe(highPrecision: true) } label: {
                 HStack {
                     Text("诊断 DiT 前两步 · Metal High")
@@ -272,7 +326,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT)
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
             Text("先测 Low，再测 High；每次只测两步，不运行 VAE，也不会生成音频。")
                 .font(.caption2).foregroundStyle(.orange)
             Button { generateFixedSong() } label: {
@@ -285,7 +339,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingDiT)
+            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingDiT || isBenchmarkingEncoder)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)

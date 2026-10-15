@@ -84,3 +84,10 @@ def test_two_step_cpu_references() -> None:
     assert all(np.isfinite(output).all() for output in outputs)
     assert not np.array_equal(outputs[0], outputs[1])
 
+
+def test_encoder_benchmark_fixture() -> None:
+    ids = np.fromfile(ROOT / "ios" / "Probe" / "encoder-input-ids.i64", dtype="<i8")
+    assert ids.shape == (107,)
+    assert np.all(ids >= 0)
+    assert np.all(ids <= np.iinfo(np.int32).max)
+
