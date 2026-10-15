@@ -379,7 +379,8 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 
 @interface FixedSongEngine ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
-                                   highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE;
+                                   highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
+                                        condition:(NSData *)condition;
 @end
 
 @implementation FixedSongEngine
@@ -452,35 +453,52 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 }
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO condition:nil];
 }
 
 + (NSDictionary<NSString *, id> *)generateOptimizedAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil];
+}
+
++ (NSDictionary<NSString *, id> *)generateWithCondition:(NSData *)condition atDirectory:(NSString *)directory {
+    if (condition.length != static_cast<size_t>(181) * 2048 * sizeof(float)) {
+        return failure(@"自定义歌词条件形状不正确。");
+    }
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO condition:nil];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepLowAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO condition:nil];
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
-                                   highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE {
+                                   highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
+                                        condition:(NSData *)condition {
     @autoreleasepool {
-        InferenceTrace trace(twoStepProbe, highPrecision, optimizedVAE);
+        InferenceTrace trace(twoStepProbe, highPrecision, optimizedVAE, nil,
+                             condition ? @"开始：30 秒自定义歌词；固定风格；DiT Metal High → VAE Metal Low；VAE 六段"
+                                       : nil);
         const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
         std::vector<float> hidden, encoder, context;
         if (!loadFixture(@"dit-hidden", latentCount, hidden) ||
-            !loadFixture(@"dit-encoder", 181 * 2048, encoder) ||
+            (!condition && !loadFixture(@"dit-encoder", 181 * 2048, encoder)) ||
             !loadFixture(@"dit-context", static_cast<size_t>(kLatentFrames) * 128, context)) {
             trace.record(@"失败：固定条件缺失");
             return failure(@"固定歌曲条件文件缺失；无法生成。");
         }
-        trace.record(@"固定条件已加载");
+        if (condition) {
+            encoder.resize(static_cast<size_t>(181) * 2048);
+            std::memcpy(encoder.data(), condition.bytes, condition.length);
+            if (!tensorStats(encoder).finite) return failure(@"自定义歌词条件包含非有限值。");
+            trace.record(@"自定义歌词条件已接入 DiT；风格与 timbre 仍为固定样例");
+        } else {
+            trace.record(@"固定条件已加载");
+        }
         const TensorStats initialStats = tensorStats(hidden);
         if (!initialStats.finite) {
             NSString *message = [NSString stringWithFormat:@"初始 latent 含非有限值，位置 %zu。",

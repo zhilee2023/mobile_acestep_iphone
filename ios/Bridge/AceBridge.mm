@@ -1,12 +1,15 @@
 #import "AceBridge.h"
 #import "FixedSongEngine.h"
 #import "EncoderBenchmark.h"
+#import "LyricConditionEngine.h"
 #import <MNN/Interpreter.hpp>
+#import <os/proc.h>
 
 #include <algorithm>
 #include <cmath>
 #include <cstring>
 #include <memory>
+#include <unistd.h>
 
 namespace {
 NSDictionary<NSString *, id> *failure(NSString *message) {
@@ -27,7 +30,8 @@ NSData *probeData(NSString *name) {
     for (NSString *name in @[@"text_encoder_w4.mnn", @"text_encoder_w4.mnn.weight",
                              @"dit_w4.mnn", @"dit_w4.mnn.weight",
                              @"vae_decoder_192_w4.mnn", @"vae_decoder_256_w4.mnn",
-                             @"vae_decoder_174_w4.mnn"]) {
+                             @"vae_decoder_174_w4.mnn", @"lyric_embedding.f16",
+                             @"lyric_encoder_73_w4.mnn"]) {
         NSString *path = [directory stringByAppendingPathComponent:name];
         NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
         status[name] = @([attributes[NSFileSize] unsignedLongLongValue] > 0);
@@ -162,6 +166,30 @@ NSData *probeData(NSString *name) {
 
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
     return [FixedSongEngine diagnoseVAEAtDirectory:directory];
+}
+
++ (NSDictionary<NSString *, id> *)generateCustomLyrics:(NSString *)lyrics atDirectory:(NSString *)directory {
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    NSDictionary<NSString *, id> *encoded = [LyricConditionEngine encodeLyrics:lyrics atDirectory:directory];
+    if (![encoded[@"success"] boolValue]) return encoded;
+    NSData *condition = encoded[@"condition"];
+    // The lyric graph has left scope; wait until its Metal allocations are
+    // released before constructing the approximately 2 GB DiT session.
+    int consecutive = 0;
+    const CFAbsoluteTime waitStarted = CFAbsoluteTimeGetCurrent();
+    while (CFAbsoluteTimeGetCurrent() - waitStarted < 8.0) {
+        consecutive = os_proc_available_memory() >= 2400000000ULL ? consecutive + 1 : 0;
+        if (consecutive >= 2) break;
+        usleep(250000);
+    }
+    if (consecutive < 2) return failure(@"歌词已编码，但内存尚未回收到安全范围；未启动 DiT。请稍后重试。");
+    NSDictionary<NSString *, id> *song = [FixedSongEngine generateWithCondition:condition atDirectory:directory];
+    if (![song[@"success"] boolValue]) return song;
+    const double elapsed = CFAbsoluteTimeGetCurrent() - started;
+    return @{ @"success": @YES, @"wavPath": song[@"wavPath"],
+              @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
+              @"backend": @"端侧歌词编码 → DiT → VAE / Metal 请求、CPU 回退可能",
+              @"message": [NSString stringWithFormat:@"新歌词已在手机编码并接入 DiT；30 秒音频生成成功，耗时 %.1f 秒，RTF %.2f。风格仍为固定样例。", elapsed, elapsed / 30.0] };
 }
 
 @end

@@ -17,6 +17,8 @@ targets:
       - path: ios/Bridge
       - path: ios/Probe
         type: folder
+      - path: ios/Tokenizer
+        type: folder
     settings:
       base:
         INFOPLIST_FILE: ios/Info.plist

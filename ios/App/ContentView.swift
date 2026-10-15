@@ -96,7 +96,7 @@ struct ContentView: View {
                     .frame(width: 46, height: 46)
                     .background(StudioPalette.mint.opacity(0.12), in: RoundedRectangle(cornerRadius: 15))
                 Spacer()
-                Label("模型 \(modelStore.validCount)/7", systemImage: modelStore.allModelsPresent ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
+                Label("基础模型 \(modelStore.coreValidCount)/7", systemImage: modelStore.allModelsPresent ? "checkmark.circle.fill" : "exclamationmark.circle.fill")
                     .font(.caption.weight(.semibold))
                     .foregroundStyle(modelStore.allModelsPresent ? StudioPalette.mint : .orange)
                     .padding(.horizontal, 12).padding(.vertical, 8)
@@ -124,7 +124,7 @@ struct ContentView: View {
                 .lineLimit(2...4)
                 .padding(13)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-            Text("当前静态模型只能验证固定样例；修改提示词还不会改变端侧输出。")
+            Text("当前风格条件仍固定；修改提示词不会改变端侧输出。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
         .studioCard()
@@ -149,7 +149,7 @@ struct ContentView: View {
             }
             .font(.subheadline.weight(.medium))
             .foregroundStyle(StudioPalette.mint)
-            Text("可直接粘贴或导入歌词；自定义歌词的端侧条件编码尚未完成。")
+            Text("可粘贴或导入歌词。试验版仅接受恰好 73 个模型 token；不符合时会提示，不会截断或假装已使用。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
         .studioCard()
@@ -206,15 +206,15 @@ struct ContentView: View {
             HStack {
                 Text("完整文件")
                 Spacer()
-                Text("\(modelStore.validCount)/7").fontWeight(.bold)
+                Text("\(modelStore.coreValidCount)/7").fontWeight(.bold)
                     .foregroundStyle(modelStore.allModelsPresent ? StudioPalette.mint : .orange)
             }
-            ProgressView(value: Double(modelStore.validCount), total: 7).tint(StudioPalette.mint)
-            Text("模型包 2.035 GB · 已识别 \(ByteCountFormatter.string(fromByteCount: modelStore.importedBytes, countStyle: .decimal))")
+            ProgressView(value: Double(modelStore.coreValidCount), total: 7).tint(StudioPalette.mint)
+            Text("基础包 2.035 GB；自定义歌词另需约 565 MB（\(modelStore.lyricValidCount)/2）· 已识别 \(ByteCountFormatter.string(fromByteCount: modelStore.importedBytes, countStyle: .decimal))")
                 .font(.caption).foregroundStyle(StudioPalette.secondary)
             HStack(spacing: 18) {
                 Button("刷新状态") { modelStore.refresh() }
-                Button(showsModelDetails ? "收起文件" : "查看七个文件") { showsModelDetails.toggle() }
+                Button(showsModelDetails ? "收起文件" : "查看模型文件") { showsModelDetails.toggle() }
                 Spacer()
                 Button("导入") { importingModels = true }
             }
@@ -248,8 +248,19 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
-            Text("Encoder 输出尚未接入 DiT；编辑的歌词不会改变本次固定样例。")
+            Text("上方按钮仍是固定歌词对照。新歌词请用下方试验按钮；风格条件暂不变。")
                 .font(.caption2).foregroundStyle(.orange)
+            Button { generateCustomLyricsSong() } label: {
+                HStack {
+                    if isGenerating { ProgressView().tint(StudioPalette.background) }
+                    Text("用当前歌词生成（73-token 试验）")
+                    Spacer()
+                    Image(systemName: "text.quote")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allCustomModelsPresent || isGenerating || isDiagnosingVAE)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
@@ -357,6 +368,41 @@ struct ContentView: View {
                 }
                 self.metricsStore.finishGeneration(audioSeconds: 30,
                     backend: result["backend"] as? String ?? "MNN Metal 请求 / CPU 回退可能")
+                do {
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path))
+                    self.generationMessage += " 已载入播放器。"
+                } catch {
+                    self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func generateCustomLyricsSong() {
+        guard !isGenerating && !isDiagnosingVAE else { return }
+        let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lyrics.isEmpty else {
+            generationMessage = "请先输入歌词。"
+            return
+        }
+        isGenerating = true
+        generationMessage = "正在本机编码当前歌词，再运行 DiT 与 VAE；仅接受 73-token 歌词…"
+        generationTrace = "正在启动…"
+        metricsStore.beginGeneration()
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.generateCustomLyrics(lyrics, atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isGenerating = false
+                self.refreshGenerationTrace()
+                self.generationMessage = result["message"] as? String ?? "歌词生成未返回结果。"
+                guard (result["success"] as? NSNumber)?.boolValue == true,
+                      let path = result["wavPath"] as? String else {
+                    self.metricsStore.cancelGeneration()
+                    return
+                }
+                self.metricsStore.finishGeneration(audioSeconds: 30,
+                    backend: result["backend"] as? String ?? "本机歌词编码 → DiT → VAE")
                 do {
                     try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path))
                     self.generationMessage += " 已载入播放器。"

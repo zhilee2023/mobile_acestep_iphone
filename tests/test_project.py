@@ -98,3 +98,11 @@ def test_vae_diagnostic_fixture() -> None:
     assert np.isfinite(latent).all()
     assert 1 < np.max(np.abs(latent)) < 100
 
+
+def test_lyric_tokenizer_bundle_and_probe() -> None:
+    ids = np.fromfile(ROOT / "ios" / "Probe" / "lyric-sample-ids.i32", dtype="<i4")
+    assert ids.shape == (73,)
+    assert ids[-2:].tolist() == [151643, 151643]
+    assert (ROOT / "ios" / "Tokenizer" / "tokenizer.json").stat().st_size > 10_000_000
+    assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
+

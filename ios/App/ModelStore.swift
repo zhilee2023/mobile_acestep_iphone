@@ -9,7 +9,7 @@ struct ModelFile: Identifiable {
 @MainActor
 final class ModelStore: ObservableObject {
     // Fixed-shape 30-second vocal pack; external MNN weights are mandatory.
-    static let requiredFiles: [ModelFile] = [
+    static let coreFiles: [ModelFile] = [
         .init(name: "text_encoder_w4.mnn", expectedBytes: 475_208),
         .init(name: "text_encoder_w4.mnn.weight", expectedBytes: 898_547_644),
         .init(name: "dit_w4.mnn", expectedBytes: 808_424),
@@ -18,6 +18,11 @@ final class ModelStore: ObservableObject {
         .init(name: "vae_decoder_256_w4.mnn", expectedBytes: 43_869_168),
         .init(name: "vae_decoder_174_w4.mnn", expectedBytes: 43_869_168)
     ]
+    static let lyricFiles: [ModelFile] = [
+        .init(name: "lyric_embedding.f16", expectedBytes: 310_618_112),
+        .init(name: "lyric_encoder_73_w4.mnn", expectedBytes: 254_171_424)
+    ]
+    static let requiredFiles = coreFiles + lyricFiles
     static let expectedBytes = requiredFiles.reduce(Int64(0)) { $0 + $1.expectedBytes }
 
     @Published private(set) var fileSizes: [String: Int64] = [:]
@@ -25,7 +30,10 @@ final class ModelStore: ObservableObject {
     @Published var message = ""
 
     var validCount: Int { Self.requiredFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
-    var allModelsPresent: Bool { validCount == Self.requiredFiles.count }
+    var coreValidCount: Int { Self.coreFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
+    var lyricValidCount: Int { Self.lyricFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
+    var allModelsPresent: Bool { coreValidCount == Self.coreFiles.count }
+    var allCustomModelsPresent: Bool { allModelsPresent && lyricValidCount == Self.lyricFiles.count }
     var importedBytes: Int64 { Self.requiredFiles.reduce(Int64(0)) { $0 + (fileSizes[$1.name] ?? 0) } }
 
     private let modelDirectory: URL
@@ -70,7 +78,7 @@ final class ModelStore: ObservableObject {
                 }
             }
             refresh(fileManager: fileManager)
-            message = imported.isEmpty ? "没有匹配的模型文件名。" : "已导入 \(imported.count) 个文件；完整性 \(validCount)/7。"
+            message = imported.isEmpty ? "没有匹配的模型文件名。" : "已导入 \(imported.count) 个文件；基础模型 \(coreValidCount)/7、歌词模型 \(lyricValidCount)/2。"
         } catch {
             refresh(fileManager: fileManager)
             message = "导入失败：\(error.localizedDescription)"

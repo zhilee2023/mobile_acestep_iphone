@@ -13,6 +13,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)generateOptimizedSerialSongAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateFixedSongAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)generateCustomLyrics:(NSString *)lyrics atDirectory:(NSString *)directory;
 @end
 
 NS_ASSUME_NONNULL_END
