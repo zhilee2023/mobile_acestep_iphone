@@ -42,7 +42,7 @@ struct InferenceTrace {
                                     withIntermediateDirectories:YES attributes:nil error:nil]) return;
         NSURL *url = [directory URLByAppendingPathComponent:@"last-inference.log"];
         file = std::fopen(url.fileSystemRepresentation, "w");
-        record(@"开始：30 秒固定样例；Metal 低精度／低内存模式");
+        record(@"开始：30 秒固定样例；DiT Metal Normal、VAE Metal Low、低内存模式");
     }
 
     ~InferenceTrace() {
@@ -97,7 +97,7 @@ TensorStats tensorStats(const std::vector<float> &values) {
     return result;
 }
 
-std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace) {
+std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace, bool normalPrecision) {
     auto graph = std::make_unique<Graph>();
     const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
@@ -105,7 +105,8 @@ std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace) {
                   CFAbsoluteTimeGetCurrent() - loadStarted]);
     if (!graph->interpreter) return nullptr;
     MNN::BackendConfig backend;
-    backend.precision = MNN::BackendConfig::Precision_Low;
+    backend.precision = normalPrecision ? MNN::BackendConfig::Precision_Normal
+                                        : MNN::BackendConfig::Precision_Low;
     backend.memory = MNN::BackendConfig::Memory_Low;
     MNN::ScheduleConfig config;
     config.type = MNN_FORWARD_METAL;
@@ -255,7 +256,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         }
         {
             trace.record(@"开始创建 DiT 会话");
-            auto dit = openGraph(ditPath, trace);
+            auto dit = openGraph(ditPath, trace, true);
             if (!dit) return failure(@"无法创建 DiT MNN 会话；可能是内存不足或算子不支持。");
             trace.record(@"DiT 会话已创建");
             if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
@@ -317,7 +318,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
             // One fixed 192-frame graph is reused for all chunks. Keeping the
             // 64-frame overlap avoids loading the larger 256-frame graph.
             trace.record(@"开始创建唯一的 VAE 192 帧会话");
-            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace);
+            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace, false);
             if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
             trace.record(@"VAE 192 帧会话已创建");
             std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
