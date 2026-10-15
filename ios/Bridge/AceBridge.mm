@@ -172,6 +172,10 @@ NSData *probeData(NSString *name) {
     return [FixedSongEngine generateOptimizedNoTuneVAEAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)generateRepaintTrialAtDirectory:(NSString *)directory {
+    return [FixedSongEngine generateRepaintTrialAtDirectory:directory];
+}
+
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
     return [FixedSongEngine diagnoseVAEAtDirectory:directory];
 }

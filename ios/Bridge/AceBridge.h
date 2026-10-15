@@ -16,6 +16,7 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)diagnoseVAENoTuneAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateFixedSongAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)generateRepaintTrialAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateCustomLyrics:(NSString *)lyrics atDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateCustomSongWithLyrics:(NSString *)lyrics
                                                      caption:(NSString *)caption

@@ -21,6 +21,8 @@ constexpr int kSampleRate = 48000;
 constexpr int kUpsample = 1920;
 constexpr int kSamples = kLatentFrames * kUpsample;
 constexpr int kVaeWindowFrames = 192;
+constexpr int kRepaintContextFrames = 125; // 5 s at 25 latent frames/s.
+constexpr int kRepaintTotalFrames = 2 * kLatentFrames - kRepaintContextFrames;
 constexpr size_t kMinimumAvailableBytes = 512ULL * 1024 * 1024;
 // The iPhone's 192-frame VAE raised footprint by ~1.2 GB after DiT release.
 // Leave a further ~0.5 GB margin before creating its session.
@@ -179,7 +181,12 @@ void put32(std::vector<uint8_t> &data, size_t offset, uint32_t value) {
     for (int index = 0; index < 4; ++index) data[offset + index] = static_cast<uint8_t>(value >> (8 * index));
 }
 
-NSURL *saveWAV(const std::vector<float> &audio, NSString **reason, NSString *prefix) {
+NSURL *saveWAV(const std::vector<float> &audio, NSString **reason, NSString *prefix,
+               size_t sampleCount = kSamples) {
+    if (audio.size() != sampleCount * 2) {
+        if (reason) *reason = @"音频样本数不匹配。";
+        return nil;
+    }
     float peak = 0.0f;
     for (size_t index = 0; index < audio.size(); ++index) {
         float sample = audio[index];
@@ -194,7 +201,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason, NSString *pre
         return nil;
     }
     const float gain = std::pow(10.0f, -1.0f / 20.0f) / peak;
-    constexpr size_t bytes = static_cast<size_t>(kSamples) * 2 * sizeof(int16_t);
+    const size_t bytes = sampleCount * 2 * sizeof(int16_t);
     std::vector<uint8_t> wave(44 + bytes);
     std::memcpy(wave.data(), "RIFF", 4);
     put32(wave, 4, static_cast<uint32_t>(36 + bytes));
@@ -208,9 +215,9 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason, NSString *pre
     put16(wave, 34, 16);
     std::memcpy(wave.data() + 36, "data", 4);
     put32(wave, 40, static_cast<uint32_t>(bytes));
-    for (int sample = 0; sample < kSamples; ++sample) {
+    for (size_t sample = 0; sample < sampleCount; ++sample) {
         for (int channel = 0; channel < 2; ++channel) {
-            float scaled = std::clamp(audio[channel * kSamples + sample] * gain, -1.0f, 1.0f);
+            float scaled = std::clamp(audio[channel * sampleCount + sample] * gain, -1.0f, 1.0f);
             int16_t pcm = static_cast<int16_t>(std::lrintf(scaled * 32767.0f));
             put16(wave, 44 + (static_cast<size_t>(sample) * 2 + channel) * sizeof(int16_t),
                   static_cast<uint16_t>(pcm));
@@ -404,6 +411,202 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 @end
 
 @implementation FixedSongEngine
+
++ (NSDictionary<NSString *, id> *)generateRepaintTrialAtDirectory:(NSString *)directory {
+    @autoreleasepool {
+        InferenceTrace trace(false, true, true, @"repaint-55s-trial.log",
+                             @"开始：固定条件两窗口 Repaint 试验；30 秒原段＋5 秒保留上下文＋25 秒续写；DiT Metal High → VAE CPU Low");
+        const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+        const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
+        std::vector<float> initialNoise, encoder, baseContext;
+        if (!loadFixture(@"dit-hidden", latentCount, initialNoise) ||
+            !loadFixture(@"dit-encoder", 181 * 2048, encoder) ||
+            !loadFixture(@"dit-context", static_cast<size_t>(kLatentFrames) * 128, baseContext)) {
+            return failure(@"续写试验所需的固定条件缺失。");
+        }
+        if (!tensorStats(initialNoise).finite || !tensorStats(encoder).finite ||
+            !tensorStats(baseContext).finite) {
+            return failure(@"续写试验的固定输入包含非有限值。");
+        }
+        for (int frame = 0; frame < kLatentFrames; ++frame) {
+            for (int channel = 64; channel < 128; ++channel) {
+                if (std::abs(baseContext[frame * 128 + channel] - 1.0f) > 1e-5f) {
+                    return failure(@"原始 DiT 上下文掩码不是全生成模式，停止续写试验。");
+                }
+            }
+        }
+        if (trace.availableBytes() < 2400000000ULL) {
+            return failure(@"续写试验启动前可用内存不足 2400 MB，未创建 DiT 会话。");
+        }
+
+        std::vector<float> first = initialNoise;
+        std::vector<float> secondNoise(latentCount);
+        // Rotate whole latent frames to obtain distinct, deterministic noise
+        // without changing the captured noise distribution.
+        constexpr int kNoiseFrameShift = 257;
+        for (int frame = 0; frame < kLatentFrames; ++frame) {
+            const int source = (frame + kNoiseFrameShift) % kLatentFrames;
+            std::memcpy(secondNoise.data() + static_cast<size_t>(frame) * kLatentChannels,
+                        initialNoise.data() + static_cast<size_t>(source) * kLatentChannels,
+                        kLatentChannels * sizeof(float));
+        }
+        std::vector<float> second = secondNoise;
+        std::vector<float> repaintContext = baseContext;
+        NSString *stepError = nil;
+        {
+            auto dit = openGraph([directory stringByAppendingPathComponent:@"dit_w4.mnn"], trace,
+                                 MNN::BackendConfig::Precision_High);
+            if (!dit) return failure(@"续写试验无法创建 DiT 会话。");
+            auto runWindow = [&](int window, std::vector<float> &state,
+                                 const std::vector<float> &noise,
+                                 const std::vector<float> &context,
+                                 const std::vector<float> *prior) -> bool {
+                std::vector<float> velocity;
+                for (size_t step = 0; step < kTimesteps.size(); ++step) {
+                    if (!trace.hasHeadroom()) {
+                        stepError = @"DiT 可用内存低于 512 MiB，已安全停止。";
+                        return false;
+                    }
+                    trace.record([NSString stringWithFormat:@"窗口 %d DiT %zu/8 开始", window, step + 1]);
+                    const float time = kTimesteps[step];
+                    if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
+                        !setInput(*dit, "context_latents", context.data(), context.size()) ||
+                        !setInput(*dit, "hidden_states", state.data(), state.size()) ||
+                        !setInput(*dit, "timestep", &time, 1) ||
+                        !setInput(*dit, "timestep_r", &time, 1)) {
+                        stepError = @"DiT 续写输入形状不匹配。";
+                        return false;
+                    }
+                    const CFAbsoluteTime stepStarted = CFAbsoluteTimeGetCurrent();
+                    const MNN::ErrorCode code = dit->interpreter->runSession(dit->session);
+                    if (code != MNN::NO_ERROR ||
+                        !readOutput(*dit, "denoised", latentCount, velocity) ||
+                        !tensorStats(velocity).finite) {
+                        stepError = [NSString stringWithFormat:@"窗口 %d DiT 第 %zu 步失败或出现非有限值。", window, step + 1];
+                        return false;
+                    }
+                    const float next = step + 1 < kTimesteps.size() ? kTimesteps[step + 1] : 0.0f;
+                    for (size_t index = 0; index < latentCount; ++index) {
+                        state[index] -= velocity[index] * (time - next);
+                    }
+                    // ACE-Step Repaint: keep the old audio region at the same
+                    // noise level during the early half of denoising steps.
+                    if (prior && step < kTimesteps.size() / 2) {
+                        for (int frame = 0; frame < kRepaintContextFrames; ++frame) {
+                            for (int channel = 0; channel < kLatentChannels; ++channel) {
+                                const size_t index = static_cast<size_t>(frame) * kLatentChannels + channel;
+                                const size_t previous = static_cast<size_t>(kLatentFrames - kRepaintContextFrames + frame)
+                                                        * kLatentChannels + channel;
+                                state[index] = next * noise[index] + (1.0f - next) * (*prior)[previous];
+                            }
+                        }
+                    }
+                    const TensorStats stats = tensorStats(state);
+                    if (!stats.finite) {
+                        stepError = [NSString stringWithFormat:@"窗口 %d DiT 第 %zu 步潜变量出现非有限值。", window, step + 1];
+                        return false;
+                    }
+                    trace.record([NSString stringWithFormat:@"窗口 %d DiT %zu/8 完成；耗时 %.3f 秒；latent 峰值 %.5g",
+                                  window, step + 1, CFAbsoluteTimeGetCurrent() - stepStarted, stats.peak]);
+                }
+                return true;
+            };
+            if (!runWindow(1, first, initialNoise, baseContext, nullptr)) return failure(stepError);
+            trace.record(@"第一窗口 30 秒完成；构造第二窗口 Repaint 上下文");
+            for (int frame = 0; frame < kRepaintContextFrames; ++frame) {
+                const size_t previous = static_cast<size_t>(kLatentFrames - kRepaintContextFrames + frame)
+                                        * kLatentChannels;
+                std::memcpy(repaintContext.data() + static_cast<size_t>(frame) * 128,
+                            first.data() + previous, kLatentChannels * sizeof(float));
+                std::fill_n(repaintContext.data() + static_cast<size_t>(frame) * 128 + 64, 64, 0.0f);
+            }
+            if (!runWindow(2, second, secondNoise, repaintContext, &first)) return failure(stepError);
+        }
+        trace.record(@"两个 DiT 窗口完成；会话已释放");
+        if (trace.availableBytes() < kVaeRequiredAvailableBytes) {
+            return failure(@"DiT 释放后可用内存不足 1700 MB，未启动 55 秒 VAE。");
+        }
+
+        std::vector<float> combined(static_cast<size_t>(kRepaintTotalFrames) * kLatentChannels);
+        std::memcpy(combined.data(), first.data(), latentCount * sizeof(float));
+        std::memcpy(combined.data() + latentCount,
+                    second.data() + static_cast<size_t>(kRepaintContextFrames) * kLatentChannels,
+                    static_cast<size_t>(kLatentFrames - kRepaintContextFrames) * kLatentChannels * sizeof(float));
+        const size_t sampleCount = static_cast<size_t>(kRepaintTotalFrames) * kUpsample;
+        std::vector<float> audio(sampleCount * 2);
+        const int coreFrames = 128;
+        const int overlapFrames = (kVaeWindowFrames - coreFrames) / 2;
+        const int vaeChunks = (kRepaintTotalFrames + coreFrames - 1) / coreFrames;
+        int written = 0;
+        {
+            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace,
+                                 MNN::BackendConfig::Precision_Low, MNN_FORWARD_CPU);
+            if (!vae) return failure(@"续写试验无法创建 VAE CPU Low 会话。");
+            int actualBackends[2] = {-1, -1};
+            if (vae->interpreter->getSessionInfo(vae->session, MNN::Interpreter::BACKENDS, actualBackends)) {
+                trace.record([NSString stringWithFormat:@"续写 VAE 主 pipeline backend=%d", actualBackends[0]]);
+                if (actualBackends[0] != MNN_FORWARD_CPU && actualBackends[0] != 13) {
+                    return failure(@"续写试验 VAE 未使用 CPU Low 主 pipeline，已停止。");
+                }
+            }
+            std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
+            std::vector<float> decoded;
+            for (int chunk = 0; chunk < vaeChunks; ++chunk) {
+                if (!trace.hasHeadroom()) return failure(@"VAE 可用内存低于 512 MiB，已安全停止。");
+                const int coreStart = chunk * coreFrames;
+                const int coreEnd = std::min(coreStart + coreFrames, kRepaintTotalFrames);
+                const int winStart = std::clamp(coreStart - overlapFrames, 0, kRepaintTotalFrames - kVaeWindowFrames);
+                for (int channel = 0; channel < kLatentChannels; ++channel) {
+                    for (int frame = 0; frame < kVaeWindowFrames; ++frame) {
+                        latent[channel * kVaeWindowFrames + frame] =
+                            combined[static_cast<size_t>(winStart + frame) * kLatentChannels + channel];
+                    }
+                }
+                if (!setInput(*vae, "latents", latent.data(), latent.size())) {
+                    return failure(@"续写试验 VAE 输入形状不匹配。");
+                }
+                const CFAbsoluteTime chunkStarted = CFAbsoluteTimeGetCurrent();
+                const MNN::ErrorCode code = vae->interpreter->runSession(vae->session);
+                if (code != MNN::NO_ERROR ||
+                    !readOutput(*vae, "waveform", static_cast<size_t>(2) * kVaeWindowFrames * kUpsample, decoded)) {
+                    return failure([NSString stringWithFormat:@"续写试验 VAE 第 %d/%d 段失败。", chunk + 1, vaeChunks]);
+                }
+                const int coreSamples = (coreEnd - coreStart) * kUpsample;
+                const int offset = (coreStart - winStart) * kUpsample;
+                for (int channel = 0; channel < 2; ++channel) {
+                    const float *source = decoded.data() +
+                                          static_cast<size_t>(channel) * kVaeWindowFrames * kUpsample + offset;
+                    float *target = audio.data() + static_cast<size_t>(channel) * sampleCount + written;
+                    for (int sample = 0; sample < coreSamples; ++sample) {
+                        if (!std::isfinite(source[sample])) return failure(@"续写试验 VAE 输出含非有限值。");
+                    }
+                    std::memcpy(target, source, static_cast<size_t>(coreSamples) * sizeof(float));
+                }
+                written += coreSamples;
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成；耗时 %.3f 秒；已解码 %.2f 秒",
+                              chunk + 1, vaeChunks, CFAbsoluteTimeGetCurrent() - chunkStarted,
+                              static_cast<double>(coreEnd) / 25.0]);
+            }
+        }
+        if (static_cast<size_t>(written) != sampleCount) return failure(@"续写试验音频长度不符。");
+        const size_t seam = static_cast<size_t>(kLatentFrames) * kUpsample;
+        for (int channel = 0; channel < 2; ++channel) {
+            const float jump = std::abs(audio[static_cast<size_t>(channel) * sampleCount + seam] -
+                                        audio[static_cast<size_t>(channel) * sampleCount + seam - 1]);
+            trace.record([NSString stringWithFormat:@"30 秒接缝声道 %d 单样本跳变 %.7g", channel, jump]);
+        }
+        NSString *saveError = nil;
+        NSURL *target = saveWAV(audio, &saveError, @"repaint-55s-fixed-w4-cpu-vae", sampleCount);
+        if (!target) return failure(saveError ?: @"续写试验 WAV 写入失败。");
+        const double elapsed = CFAbsoluteTimeGetCurrent() - started;
+        trace.record([NSString stringWithFormat:@"55 秒续写 WAV 已保存；总耗时 %.3f 秒；RTF %.3f",
+                      elapsed, elapsed / 55.0]);
+        return @{ @"success": @YES, @"wavPath": target.path, @"elapsedSeconds": @(elapsed),
+                  @"audioSeconds": @55.0, @"backend": @"两窗口 DiT Metal High → VAE CPU Low",
+                  @"message": [NSString stringWithFormat:@"固定条件 30＋25 秒 Repaint 试验完成，耗时 %.1f 秒，RTF %.2f；请试听 30 秒接缝并分享日志。",
+                                elapsed, elapsed / 55.0] };
+    }
+}
 
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
     @autoreleasepool {

@@ -76,6 +76,11 @@ struct ContentView: View {
             .appendingPathComponent("Generated/last-inference-notune-vae.log")
     }
 
+    private var repaintTrialTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/repaint-55s-trial.log")
+    }
+
     var body: some View {
         ZStack {
             StudioPalette.background.ignoresSafeArea()
@@ -317,6 +322,19 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Button { generateRepaintTrial() } label: {
+                HStack {
+                    if isGenerating { ProgressView().tint(StudioPalette.background) }
+                    Text("两段续写约 55 秒（真机实验）")
+                    Spacer()
+                    Image(systemName: "waveform.path")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Text("固定风格与歌词：先生成 30 秒，再保留结尾 5 秒作为第二窗口上下文，新增约 25 秒。第二窗口仍使用同一歌词条件，只验证音频衔接、耗时和内存；不会自动接唱第一段没唱完的字。")
+                .font(.caption2).foregroundStyle(StudioPalette.secondary)
             Button { generateNoTuneSong() } label: {
                 HStack {
                     Text("生成 Metal NoTune 整首对照（实验）")
@@ -361,6 +379,12 @@ struct ContentView: View {
             if FileManager.default.fileExists(atPath: traceURL.path) {
                 ShareLink(item: traceURL) {
                     Label("分享推理日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: repaintTrialTraceURL.path) {
+                ShareLink(item: repaintTrialTraceURL) {
+                    Label("分享 55 秒续写实验日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
@@ -478,7 +502,7 @@ struct ContentView: View {
     }
 
     private func refreshGenerationTrace() {
-        let candidates = [customInferenceTraceURL, styleEncoderTraceURL, noTuneSongTraceURL,
+        let candidates = [repaintTrialTraceURL, customInferenceTraceURL, styleEncoderTraceURL, noTuneSongTraceURL,
                           optimizedSerialTraceURL, cpuVaeSerialTraceURL,
                           cpuVaeInferenceTraceURL, traceURL]
         let latest = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -561,6 +585,37 @@ struct ContentView: View {
         }
     }
 
+    private func generateRepaintTrial() {
+        guard !isGenerating && !isDiagnosingVAE else { return }
+        isGenerating = true
+        generationMessage = "正在运行固定条件两窗口续写；请保持 App 在前台，过程可能超过一分钟…"
+        generationTrace = "正在启动…"
+        metricsStore.beginGeneration()
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.generateRepaintTrial(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isGenerating = false
+                self.refreshGenerationTrace()
+                self.generationMessage = result["message"] as? String ?? "续写实验未返回结果。"
+                guard (result["success"] as? NSNumber)?.boolValue == true,
+                      let path = result["wavPath"] as? String else {
+                    self.metricsStore.cancelGeneration()
+                    return
+                }
+                self.metricsStore.finishGeneration(audioSeconds: 55,
+                    backend: result["backend"] as? String ?? "两窗口 DiT Metal + VAE CPU Low")
+                do {
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path),
+                        description: "iPhone 固定条件两窗口续写 · 55 秒实验")
+                    self.generationMessage += " 已载入播放器；请重点试听 30 秒附近。"
+                } catch {
+                    self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
     private func generateCustomSong(forceBundledCaption: Bool = false) {
         guard !isGenerating && !isDiagnosingVAE else { return }
         captionIsFocused = false
@@ -617,7 +672,7 @@ struct ContentView: View {
                 Spacer()
                 metric("后端", metricsStore.lastRun?.backend ?? "未测")
             }
-            Text("仅在真实 iPhone 完整生成 30 秒音频后记录。")
+            Text("仅在真实 iPhone 完整生成音频后记录；续写实验按实际 55 秒计算 RTF。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
         .studioCard()

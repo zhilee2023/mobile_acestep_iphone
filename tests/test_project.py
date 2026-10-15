@@ -107,12 +107,12 @@ def test_lyric_tokenizer_bundle_and_probe() -> None:
     assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
 
 
-def test_v27_connected_condition_vae_and_style_presets() -> None:
+def test_v28_connected_condition_vae_style_and_repaint_trial() -> None:
     import json
     import plistlib
 
     info = plistlib.loads((ROOT / "ios" / "Info.plist").read_bytes())
-    assert info["CFBundleVersion"] == "27"
+    assert info["CFBundleVersion"] == "28"
     engine = (ROOT / "ios" / "Bridge" / "FixedSongEngine.mm").read_text(encoding="utf-8")
     benchmark = (ROOT / "ios" / "Bridge" / "EncoderBenchmark.mm").read_text(encoding="utf-8")
     ui = (ROOT / "ios" / "App" / "ContentView.swift").read_text(encoding="utf-8")
@@ -142,4 +142,29 @@ def test_v27_connected_condition_vae_and_style_presets() -> None:
     assert 'selectedPreset?.caption' in ui
     assert '直接用内置风格＋当前歌词生成（107 token）' in ui
     assert '风格预设（均为 107 token）' in ui
+    assert '两段续写约 55 秒（真机实验）' in ui
+    assert 'finishGeneration(audioSeconds: 55' in ui
+    assert 'repaint-55s-trial.log' in engine
+    assert 'kRepaintContextFrames = 125' in engine
+    assert 'kRepaintTotalFrames = 2 * kLatentFrames - kRepaintContextFrames' in engine
+    assert 'std::fill_n(repaintContext.data()' in engine
+    assert 'state[index] = next * noise[index] + (1.0f - next) * (*prior)[previous]' in engine
+    assert 'saveWAV(audio, &saveError, @"repaint-55s-fixed-w4-cpu-vae", sampleCount)' in engine
+
+
+def test_repaint_window_geometry() -> None:
+    original_frames = 750
+    preserved_frames = 125
+    combined_frames = 2 * original_frames - preserved_frames
+    assert combined_frames == 1375
+    assert combined_frames / 25 == 55
+    assert combined_frames * 1920 / 48000 == 55
+    windows = [(start, min(start + 128, combined_frames))
+               for start in range(0, combined_frames, 128)]
+    assert len(windows) == 11
+    assert sum(end - start for start, end in windows) == combined_frames
+    assert any(start < original_frames < end for start, end in windows)
+    context = np.fromfile(ROOT / "ios" / "Probe" / "dit-context.f32", dtype="<f4")
+    assert context.shape == (750 * 128,)
+    assert np.all(context.reshape(750, 128)[:, 64:] == 1.0)
 
