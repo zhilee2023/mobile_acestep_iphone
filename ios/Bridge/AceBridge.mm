@@ -135,5 +135,9 @@ NSData *probeData(NSString *name) {
     return [FixedSongEngine generateAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)runTwoStepHighProbeAtDirectory:(NSString *)directory {
+    return [FixedSongEngine probeTwoStepHighAtDirectory:directory];
+}
+
 @end
 

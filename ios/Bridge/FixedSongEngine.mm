@@ -34,7 +34,7 @@ NSDictionary<NSString *, id> *failure(NSString *message) {
 struct InferenceTrace {
     FILE *file = nullptr;
 
-    InferenceTrace() {
+    explicit InferenceTrace(bool highDiTProbe) {
         NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                  inDomains:NSUserDomainMask].firstObject;
         NSURL *directory = [documents URLByAppendingPathComponent:@"Generated" isDirectory:YES];
@@ -42,7 +42,8 @@ struct InferenceTrace {
                                     withIntermediateDirectories:YES attributes:nil error:nil]) return;
         NSURL *url = [directory URLByAppendingPathComponent:@"last-inference.log"];
         file = std::fopen(url.fileSystemRepresentation, "w");
-        record(@"开始：30 秒固定样例；DiT Metal Normal、VAE Metal Low、低内存模式");
+        record(highDiTProbe ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
+                            : @"开始：30 秒固定样例；DiT Metal Low、VAE Metal Low、低内存模式");
     }
 
     ~InferenceTrace() {
@@ -97,7 +98,8 @@ TensorStats tensorStats(const std::vector<float> &values) {
     return result;
 }
 
-std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace, bool normalPrecision) {
+std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace,
+                                 MNN::BackendConfig::PrecisionMode precision) {
     auto graph = std::make_unique<Graph>();
     const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
@@ -105,8 +107,7 @@ std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace, bool nor
                   CFAbsoluteTimeGetCurrent() - loadStarted]);
     if (!graph->interpreter) return nullptr;
     MNN::BackendConfig backend;
-    backend.precision = normalPrecision ? MNN::BackendConfig::Precision_Normal
-                                        : MNN::BackendConfig::Precision_Low;
+    backend.precision = precision;
     backend.memory = MNN::BackendConfig::Memory_Low;
     MNN::ScheduleConfig config;
     config.type = MNN_FORWARD_METAL;
@@ -225,11 +226,23 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
 }
 } // namespace
 
+@interface FixedSongEngine ()
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory highDiTProbe:(BOOL)highDiTProbe;
+@end
+
 @implementation FixedSongEngine
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory highDiTProbe:NO];
+}
+
++ (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory highDiTProbe:YES];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory highDiTProbe:(BOOL)highDiTProbe {
     @autoreleasepool {
-        InferenceTrace trace;
+        InferenceTrace trace(highDiTProbe);
         const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
         std::vector<float> hidden, encoder, context;
@@ -249,6 +262,14 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         }
         trace.record([NSString stringWithFormat:@"初始 latent 峰值 %.8g", initialStats.peak]);
 
+        std::vector<float> cpuStep1, cpuStep2;
+        if (highDiTProbe &&
+            (!loadFixture(@"dit-w4-cpu-step1", latentCount, cpuStep1) ||
+             !loadFixture(@"dit-w4-cpu-step2", latentCount, cpuStep2))) {
+            trace.record(@"失败：本地 CPU/W4 两步参考数据缺失");
+            return failure(@"本地 CPU/W4 两步参考数据缺失。请重新安装诊断版。");
+        }
+
         NSString *ditPath = [directory stringByAppendingPathComponent:@"dit_w4.mnn"];
         if (![NSFileManager.defaultManager fileExistsAtPath:[directory stringByAppendingPathComponent:@"dit_w4.mnn.weight"]]) {
             trace.record(@"失败：DiT 权重缺失");
@@ -256,7 +277,8 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         }
         {
             trace.record(@"开始创建 DiT 会话");
-            auto dit = openGraph(ditPath, trace, true);
+            auto dit = openGraph(ditPath, trace, highDiTProbe ? MNN::BackendConfig::Precision_High
+                                                               : MNN::BackendConfig::Precision_Low);
             if (!dit) return failure(@"无法创建 DiT MNN 会话；可能是内存不足或算子不支持。");
             trace.record(@"DiT 会话已创建");
             if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
@@ -265,7 +287,8 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                 return failure(@"DiT 固定条件输入形状不匹配。");
             }
             std::vector<float> velocity;
-            for (size_t step = 0; step < kTimesteps.size(); ++step) {
+            const size_t stepCount = highDiTProbe ? 2 : kTimesteps.size();
+            for (size_t step = 0; step < stepCount; ++step) {
                 if (!trace.hasHeadroom()) {
                     trace.record(@"安全停止：剩余进程内存低于 512 MiB");
                     return failure(@"剩余进程内存低于 512 MiB，已停止以避免闪退。请分享诊断日志。");
@@ -294,6 +317,19 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                     trace.record(message);
                     return failure(message);
                 }
+                if (highDiTProbe) {
+                    const std::vector<float> &reference = step == 0 ? cpuStep1 : cpuStep2;
+                    double squaredError = 0.0;
+                    double squaredReference = 0.0;
+                    for (size_t index = 0; index < latentCount; ++index) {
+                        const double difference = static_cast<double>(velocity[index]) - reference[index];
+                        squaredError += difference * difference;
+                        squaredReference += static_cast<double>(reference[index]) * reference[index];
+                    }
+                    const double relativeL2 = std::sqrt(squaredError / std::max(squaredReference, 1e-20));
+                    trace.record([NSString stringWithFormat:@"DiT %zu/2 相对本地 CPU/W4 输出 L2 = %.6g",
+                                  step + 1, relativeL2]);
+                }
                 float next = step + 1 < kTimesteps.size() ? kTimesteps[step + 1] : 0.0f;
                 float delta = time - next;
                 for (size_t index = 0; index < latentCount; ++index) hidden[index] -= velocity[index] * delta;
@@ -310,6 +346,11 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                     velocityStats.peak, hiddenStats.peak]);
             }
         }
+        if (highDiTProbe) {
+            trace.record(@"DiT Metal High 两步完成；诊断结束，未运行 VAE");
+            return @{ @"success": @YES, @"message": @"DiT Metal High 两步输出均为有限值；请分享诊断日志。未运行 VAE，也未生成音频。",
+                      @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started) };
+        }
         trace.record(@"DiT 会话已释放；开始 VAE");
 
         std::vector<float> audio(static_cast<size_t>(2) * kSamples);
@@ -318,7 +359,8 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
             // One fixed 192-frame graph is reused for all chunks. Keeping the
             // 64-frame overlap avoids loading the larger 256-frame graph.
             trace.record(@"开始创建唯一的 VAE 192 帧会话");
-            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace, false);
+            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace,
+                                 MNN::BackendConfig::Precision_Low);
             if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
             trace.record(@"VAE 192 帧会话已创建");
             std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);

@@ -75,3 +75,12 @@ def test_required_layout() -> None:
     missing = [name for name in required if not (ROOT / name).exists()]
     assert not missing, f"missing project files: {missing}"
 
+
+def test_two_step_cpu_references() -> None:
+    probe = ROOT / "ios" / "Probe"
+    outputs = [np.fromfile(probe / f"dit-w4-cpu-step{step}.f32", dtype="<f4")
+               for step in (1, 2)]
+    assert all(output.shape == (750 * 64,) for output in outputs)
+    assert all(np.isfinite(output).all() for output in outputs)
+    assert not np.array_equal(outputs[0], outputs[1])
+

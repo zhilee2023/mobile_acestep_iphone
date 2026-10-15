@@ -71,8 +71,11 @@ jobs:
               print(f"{key}: {info.get(key)!r}")
           assert info.get("UIFileSharingEnabled") is True
           assert info.get("LSSupportsOpeningDocumentsInPlace") is True
-          assert str(info.get("CFBundleVersion")) == "10"
+          assert str(info.get("CFBundleVersion")) == "11"
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-hidden.f32").is_file()
+          for step in (1, 2):
+              reference = Path(f"build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-w4-cpu-step{step}.f32")
+              assert reference.stat().st_size == 750 * 64 * 4
           PY
 
       - name: Package unsigned IPA
