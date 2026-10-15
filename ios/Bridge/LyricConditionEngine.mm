@@ -271,19 +271,33 @@ bool readProbe(NSString *name, NSString *extension, size_t bytes, std::vector<ui
     NSString *tokenError = nil;
     NSArray<NSNumber *> *ids = tokenize(caption, NO, &tokenError);
     if (!ids) return failure(tokenError ?: @"风格提示词分词失败。");
-    if (ids.count != 107) {
-        return failure([NSString stringWithFormat:@"当前静态 Qwen 图只支持恰好 107 个风格 token；现在为 %lu 个。请调整描述，不会截断或补齐。",
-                        static_cast<unsigned long>(ids.count)], ids.count);
-    }
     NSURL *sampleURL = [NSBundle.mainBundle URLForResource:@"sample-caption" withExtension:@"txt" subdirectory:@"Tokenizer"];
     NSString *sample = sampleURL ? [NSString stringWithContentsOfURL:sampleURL encoding:NSUTF8StringEncoding error:nil] : nil;
     std::vector<uint8_t> reference;
     if (!sample || !readProbe(@"encoder-input-ids", @"i64", 107 * sizeof(int64_t), reference)) {
         return failure(@"风格分词自检文件缺失。");
     }
+    sample = [sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]];
     NSString *sampleError = nil;
-    NSArray<NSNumber *> *sampleIDs = tokenize([sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]], NO, &sampleError);
-    if (!sampleIDs || sampleIDs.count != 107) return failure(@"风格分词自检长度不一致。");
+    NSArray<NSNumber *> *sampleIDs = tokenize(sample, NO, &sampleError);
+    if (!sampleIDs) return failure(sampleError ?: @"风格分词自检失败。");
+    if (sampleIDs.count != 107 || ids.count != 107) {
+        const BOOL same = [caption isEqualToString:sample];
+        NSUInteger firstDifference = 0;
+        const NSUInteger commonLength = std::min(caption.length, sample.length);
+        while (firstDifference < commonLength &&
+               [caption characterAtIndex:firstDifference] == [sample characterAtIndex:firstDifference]) {
+            ++firstDifference;
+        }
+        NSString *difference = same ? @"无" : [NSString stringWithFormat:@"%lu（当前 U+%04X，样例 U+%04X）",
+            static_cast<unsigned long>(firstDifference),
+            firstDifference < caption.length ? [caption characterAtIndex:firstDifference] : 0,
+            firstDifference < sample.length ? [sample characterAtIndex:firstDifference] : 0];
+        return failure([NSString stringWithFormat:@"风格诊断：内置样例 %lu token，当前输入 %lu token；文本%@；输入 %lu 字符、样例 %lu 字符；首个不同位置 %@。静态 Qwen 图要求 107 token，尚未运行推理。",
+                        static_cast<unsigned long>(sampleIDs.count), static_cast<unsigned long>(ids.count),
+                        same ? @"相同" : @"不同", static_cast<unsigned long>(caption.length),
+                        static_cast<unsigned long>(sample.length), difference], ids.count);
+    }
     const int64_t *expected = reinterpret_cast<const int64_t *>(reference.data());
     for (int index = 0; index < 107; ++index) {
         if (sampleIDs[index].longLongValue != expected[index]) {
