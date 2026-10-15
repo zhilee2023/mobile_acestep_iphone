@@ -20,6 +20,12 @@ struct ContentView: View {
     @State private var showsModelDetails = false
     @State private var isGenerating = false
     @State private var generationMessage = "请先完成 DiT 真机单步测试。"
+    @State private var generationTrace = "尚无诊断记录"
+
+    private var traceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/last-inference.log")
+    }
 
     var body: some View {
         ZStack {
@@ -60,6 +66,10 @@ struct ContentView: View {
         .onReceive(Timer.publish(every: 0.25, on: .main, in: .common).autoconnect()) { _ in
             studio.tick()
         }
+        .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
+            refreshGenerationTrace()
+        }
+        .onAppear { refreshGenerationTrace() }
     }
 
     private var header: some View {
@@ -253,20 +263,37 @@ struct ContentView: View {
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
+            Text("最近阶段：\(generationTrace)")
+                .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
+            if FileManager.default.fileExists(atPath: traceURL.path) {
+                ShareLink(item: traceURL) {
+                    Label("分享诊断日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
         }
         .studioCard()
+    }
+
+    private func refreshGenerationTrace() {
+        guard let content = try? String(contentsOf: traceURL, encoding: .utf8),
+              let line = content.split(whereSeparator: \.isNewline).last else { return }
+        let fields = line.split(separator: "\t")
+        generationTrace = fields.dropFirst().joined(separator: " · ")
     }
 
     private func generateFixedSong() {
         guard !isGenerating else { return }
         isGenerating = true
         generationMessage = "正在手机上执行 MNN 推理，请保持 App 在前台…"
+        generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
             let result = AceBridge.generateFixedSong(atDirectory: directory)
             DispatchQueue.main.async {
                 self.isGenerating = false
+                self.refreshGenerationTrace()
                 self.generationMessage = result["message"] as? String ?? "未收到生成结果。"
                 guard (result["success"] as? NSNumber)?.boolValue == true,
                       let path = result["wavPath"] as? String else {
