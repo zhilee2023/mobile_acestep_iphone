@@ -107,11 +107,11 @@ def test_lyric_tokenizer_bundle_and_probe() -> None:
     assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
 
 
-def test_v23_connected_condition_and_vae_modes() -> None:
+def test_v24_connected_condition_and_vae_modes() -> None:
     import plistlib
 
     info = plistlib.loads((ROOT / "ios" / "Info.plist").read_bytes())
-    assert info["CFBundleVersion"] == "23"
+    assert info["CFBundleVersion"] == "24"
     engine = (ROOT / "ios" / "Bridge" / "FixedSongEngine.mm").read_text(encoding="utf-8")
     benchmark = (ROOT / "ios" / "Bridge" / "EncoderBenchmark.mm").read_text(encoding="utf-8")
     ui = (ROOT / "ios" / "App" / "ContentView.swift").read_text(encoding="utf-8")
@@ -134,5 +134,6 @@ def test_v23_connected_condition_and_vae_modes() -> None:
     assert 'if (!lyric) [ids addObject:@(kNewline)]' in lyric
     assert 'constexpr int kNewline = 198;' in lyric
     assert '内置样例 %lu token，当前输入 %lu token' in lyric
-    assert '恢复示例风格（107 token）' in ui
+    assert '使用内置示例风格（107 token）' in ui
+    assert 'usesExactSampleCaption ? SongStudioStore.sampleCaption : studio.caption' in ui
 

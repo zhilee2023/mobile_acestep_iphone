@@ -24,6 +24,8 @@ struct ContentView: View {
     @State private var activeVaeTraceURL: URL?
     @State private var generationMessage = "模型文件齐全后即可生成固定样例。"
     @State private var generationTrace = "尚无诊断记录"
+    @State private var usesExactSampleCaption = false
+    @FocusState private var captionIsFocused: Bool
 
     private var traceURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -150,13 +152,30 @@ struct ContentView: View {
                 tag("女声样例")
             }
             Text("风格提示词").font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.secondary)
-            TextField("描述歌曲风格", text: $studio.caption, axis: .vertical)
+            TextField("描述歌曲风格", text: Binding(
+                get: { studio.caption },
+                set: { newValue in
+                    // A focused TextField may submit stale edits after the restore button fires.
+                    // Ignore those commits while the exact bundled sample is selected.
+                    guard !usesExactSampleCaption || captionIsFocused else { return }
+                    studio.caption = newValue
+                    usesExactSampleCaption = false
+                }), axis: .vertical)
+                .focused($captionIsFocused)
                 .lineLimit(2...4)
                 .padding(13)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-            Button("恢复示例风格（107 token）") { studio.restoreSampleCaption() }
+            Button("使用内置示例风格（107 token）") {
+                captionIsFocused = false
+                studio.restoreSampleCaption()
+                usesExactSampleCaption = true
+            }
                 .font(.subheadline.weight(.medium))
                 .foregroundStyle(StudioPalette.mint)
+            if usesExactSampleCaption {
+                Text("已选用内置示例；生成时将直接使用这份 304 字符文本。点入输入框修改后切回自定义风格。")
+                    .font(.caption2).foregroundStyle(StudioPalette.secondary)
+            }
             Text("完整生成会在手机上编码此风格；当前静态模型只接受恰好 107 个风格 token。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
@@ -513,8 +532,10 @@ struct ContentView: View {
 
     private func generateCustomSong() {
         guard !isGenerating && !isDiagnosingVAE else { return }
+        captionIsFocused = false
         let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-        let caption = studio.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        let caption = (usesExactSampleCaption ? SongStudioStore.sampleCaption : studio.caption)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !lyrics.isEmpty else {
             generationMessage = "请先输入歌词。"
             return
