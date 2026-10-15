@@ -1,0 +1,15 @@
+name: Apple Tokenizer Diagnostic
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare Foundation tokenizer with ACE-Step reference
+        run: swift scripts/diagnose-apple-tokenizer.swift
