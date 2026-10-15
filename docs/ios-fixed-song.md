@@ -16,6 +16,8 @@ v9 真机记录显示：初始 latent 与 DiT 第 1 步输出均有限，第 2 �
 
 v10 真机仍在 DiT 第 2 步位置 0 检测到非有限值。核对锁定版本 MNN 的 `MetalRuntime::onCreate` 后发现，它对 `Precision_Normal` 和 `Precision_Low` 都设置 `useFp16AsFp32=true`，只有 `Precision_High` 才切到另一条路径。因此 v10 并不是有效的精度对照，之前关于 Normal 可能改善 Metal 精度的判断不成立。v11 新增独立的「诊断 DiT 前两步 · Metal High」按钮，仅运行两步并记录有限值、耗时、峰值、内存及相对本地 CPU/High W4 输出的 L2；不创建 VAE、不写 WAV。本地两步参考值分别由 `scripts/capture-two-step-cpu.py` 从同一 W4 模型和固定条件产生。完整固定样例恢复为 DiT Low／VAE Low。High 会话本身仍可能增加内存，诊断结果须以真机日志为准。
 
+v11 真机 High 两步均为有限值，第一步相对本地 CPU/W4 L2 为 `1.8021e-05`，第二步相对旧参考却为 `1.25921`。后续本地重复输入实验揭示原实现的关键缺陷：同一 MNN CPU/High 会话、同一输入，若只在首步传入 `encoder_hidden_states` 和 `context_latents`，第二次输出相对第一次的 L2 达 `1.4563`；只重传动态 latent/时间仍不一致，而每次重传全部五个输入则完全一致。单独重传 encoder 或 context 均不足。这是针对当前模型／运行时／低内存配置的实测行为，不能仅凭现象断言 MNN 内部哪处复用了缓冲区。v12 因此在每个 DiT 步骤前重传全部五个输入，并提供 Low、High 两种各运行两步的诊断按钮；第 2 步 CPU/W4 参考也已按修正后的逻辑重新捕获（输出峰值由旧 `5.7261` 变为 `8.4929`）。旧八步本地 WAV 因条件传入方式错误，不再作为有效数值基准；修正后在独立目录重跑了八步 DiT 和 12 段 VAE，30 秒音频有限，192 帧复用 VAE 与旧六段 VAE 的相对 L2 为 `1.27e-06`。这些仍不是 iPhone 真机结果。
+
 Windows CPU 验证脚本 `scripts/validate-ios-fixed-song.py` 已完成八步 DiT、旧六段 VAE 和新十二段 VAE，生成 1,440,000 帧音频；首步 W4 对官方捕获输出的相对 L2 为 0.4947。该数值只说明图执行，不保证歌声音质或歌词清晰度。iPhone 真机需要先运行单步探针，再运行固定样例，检查是否闪退、峰值内存、WAV 是否可播放、耗时/RTF 与人耳听感。
 
 任意上传歌词要真正参与端侧生成，仍需扩展导出：Qwen tokenizer、歌词 token embedding、DiT 条件编码器、固定形状的长度策略，以及这些组件的 iPhone 数值/内存验证。目前的七个 W4 文件不足以完成这件事。不要把本固定样例称为“任意歌词全 W4 端侧推理”。

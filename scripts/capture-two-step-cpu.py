@@ -29,10 +29,13 @@ def main() -> None:
         host = MNN.Tensor(values.shape, MNN.Halide_Type_Float, values, MNN.Tensor_DimensionType_Caffe)
         tensor.copyFrom(host)
 
-    put("encoder_hidden_states", fixture("encoder_hidden_states", "dit-encoder.f32"))
-    put("context_latents", fixture("context_latents", "dit-context.f32"))
+    encoder = fixture("encoder_hidden_states", "dit-encoder.f32")
+    context = fixture("context_latents", "dit-context.f32")
     hidden = fixture("hidden_states", "dit-hidden.f32").copy()
     for index, time in enumerate((1.0, 0.875), start=1):
+        # MNN low-memory sessions do not preserve these input contents after a run.
+        put("encoder_hidden_states", encoder)
+        put("context_latents", context)
         put("hidden_states", hidden)
         put("timestep", np.array([time], dtype=np.float32))
         put("timestep_r", np.array([time], dtype=np.float32))

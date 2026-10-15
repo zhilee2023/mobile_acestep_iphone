@@ -19,7 +19,7 @@ struct ContentView: View {
     @State private var importingAudio = false
     @State private var showsModelDetails = false
     @State private var isGenerating = false
-    @State private var isTestingHighDiT = false
+    @State private var isTestingDiT = false
     @State private var generationMessage = "请先完成 DiT 真机单步测试。"
     @State private var generationTrace = "尚无诊断记录"
 
@@ -252,18 +252,28 @@ struct ContentView: View {
             heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
             Text("固定条件样例：手机运行 8 步 DiT 与 12 段 VAE，输出 30 秒 WAV。VAE 只建立一次会话；上方编辑的歌词暂不会参与生成。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
-            Button { runTwoStepHighProbe() } label: {
+            Button { runTwoStepProbe(highPrecision: false) } label: {
                 HStack {
-                    if isTestingHighDiT { ProgressView().tint(StudioPalette.background) }
-                    Text(isTestingHighDiT ? "正在诊断 DiT…" : "诊断 DiT 前两步 · Metal High")
+                    if isTestingDiT { ProgressView().tint(StudioPalette.background) }
+                    Text(isTestingDiT ? "正在诊断 DiT…" : "诊断 DiT 前两步 · Metal Low")
                     Spacer()
                     Image(systemName: "waveform.path.ecg")
                 }
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingHighDiT)
-            Text("此项只测数值与内存，不运行 VAE，也不会生成音频。")
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT)
+            Button { runTwoStepProbe(highPrecision: true) } label: {
+                HStack {
+                    Text("诊断 DiT 前两步 · Metal High")
+                    Spacer()
+                    Image(systemName: "waveform.path.ecg")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT)
+            Text("先测 Low，再测 High；每次只测两步，不运行 VAE，也不会生成音频。")
                 .font(.caption2).foregroundStyle(.orange)
             Button { generateFixedSong() } label: {
                 HStack {
@@ -275,7 +285,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingHighDiT)
+            .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingDiT)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
@@ -326,16 +336,18 @@ struct ContentView: View {
         }
     }
 
-    private func runTwoStepHighProbe() {
-        guard !isTestingHighDiT && !isGenerating else { return }
-        isTestingHighDiT = true
-        generationMessage = "正在真机运行 DiT Metal High 两步诊断…"
+    private func runTwoStepProbe(highPrecision: Bool) {
+        guard !isTestingDiT && !isGenerating else { return }
+        isTestingDiT = true
+        generationMessage = "正在真机运行 DiT Metal \(highPrecision ? "High" : "Low") 两步诊断…"
         generationTrace = "正在启动…"
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.runTwoStepHighProbe(atDirectory: directory)
+            let result = highPrecision
+                ? AceBridge.runTwoStepHighProbe(atDirectory: directory)
+                : AceBridge.runTwoStepLowProbe(atDirectory: directory)
             DispatchQueue.main.async {
-                self.isTestingHighDiT = false
+                self.isTestingDiT = false
                 self.refreshGenerationTrace()
                 self.generationMessage = result["message"] as? String ?? "诊断未返回结果。"
             }

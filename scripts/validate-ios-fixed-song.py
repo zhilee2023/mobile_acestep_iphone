@@ -19,7 +19,7 @@ import soundfile as sf
 ROOT = Path(__file__).resolve().parents[1]
 PROBE = ROOT / "ios" / "Probe"
 MODELS = ROOT / "models" / "mnn" / "vocal-30s-v2"
-OUT = ROOT / "outputs" / "ios-fixed-song-validation"
+OUT = ROOT / "outputs" / "ios-fixed-song-validation-v12"
 TIMESTEPS = [1.0, 0.875, 0.75, 0.625, 0.5, 0.375, 0.25, 0.125]
 
 
@@ -49,11 +49,11 @@ def main() -> None:
     context = load("context_latents", "dit-context.f32")
 
     dit, dit_handle = session(MODELS / "dit_w4.mnn")
-    write_input(dit, dit_handle, "encoder_hidden_states", encoder)
-    write_input(dit, dit_handle, "context_latents", context)
     xt = hidden.copy()
     first_step_error = None
     for index, current in enumerate(TIMESTEPS):
+        write_input(dit, dit_handle, "encoder_hidden_states", encoder)
+        write_input(dit, dit_handle, "context_latents", context)
         write_input(dit, dit_handle, "hidden_states", xt)
         write_input(dit, dit_handle, "timestep", np.array([current], dtype=np.float32))
         write_input(dit, dit_handle, "timestep_r", np.array([current], dtype=np.float32))

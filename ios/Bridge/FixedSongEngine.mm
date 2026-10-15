@@ -34,7 +34,7 @@ NSDictionary<NSString *, id> *failure(NSString *message) {
 struct InferenceTrace {
     FILE *file = nullptr;
 
-    explicit InferenceTrace(bool highDiTProbe) {
+    InferenceTrace(bool twoStepProbe, bool highPrecision) {
         NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                  inDomains:NSUserDomainMask].firstObject;
         NSURL *directory = [documents URLByAppendingPathComponent:@"Generated" isDirectory:YES];
@@ -42,7 +42,8 @@ struct InferenceTrace {
                                     withIntermediateDirectories:YES attributes:nil error:nil]) return;
         NSURL *url = [directory URLByAppendingPathComponent:@"last-inference.log"];
         file = std::fopen(url.fileSystemRepresentation, "w");
-        record(highDiTProbe ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
+        record(twoStepProbe ? (highPrecision ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
+                                             : @"开始：DiT 两步诊断；Metal Low、低内存模式；不运行 VAE")
                             : @"开始：30 秒固定样例；DiT Metal Low、VAE Metal Low、低内存模式");
     }
 
@@ -227,22 +228,28 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
 } // namespace
 
 @interface FixedSongEngine ()
-+ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory highDiTProbe:(BOOL)highDiTProbe;
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
+                                   highPrecision:(BOOL)highPrecision;
 @end
 
 @implementation FixedSongEngine
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory highDiTProbe:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:NO];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory highDiTProbe:YES];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES];
 }
 
-+ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory highDiTProbe:(BOOL)highDiTProbe {
++ (NSDictionary<NSString *, id> *)probeTwoStepLowAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
+                                   highPrecision:(BOOL)highPrecision {
     @autoreleasepool {
-        InferenceTrace trace(highDiTProbe);
+        InferenceTrace trace(twoStepProbe, highPrecision);
         const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
         std::vector<float> hidden, encoder, context;
@@ -263,7 +270,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         trace.record([NSString stringWithFormat:@"初始 latent 峰值 %.8g", initialStats.peak]);
 
         std::vector<float> cpuStep1, cpuStep2;
-        if (highDiTProbe &&
+        if (twoStepProbe &&
             (!loadFixture(@"dit-w4-cpu-step1", latentCount, cpuStep1) ||
              !loadFixture(@"dit-w4-cpu-step2", latentCount, cpuStep2))) {
             trace.record(@"失败：本地 CPU/W4 两步参考数据缺失");
@@ -277,17 +284,13 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         }
         {
             trace.record(@"开始创建 DiT 会话");
-            auto dit = openGraph(ditPath, trace, highDiTProbe ? MNN::BackendConfig::Precision_High
+            auto dit = openGraph(ditPath, trace, highPrecision ? MNN::BackendConfig::Precision_High
                                                                : MNN::BackendConfig::Precision_Low);
             if (!dit) return failure(@"无法创建 DiT MNN 会话；可能是内存不足或算子不支持。");
             trace.record(@"DiT 会话已创建");
-            if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
-                !setInput(*dit, "context_latents", context.data(), context.size())) {
-                trace.record(@"失败：DiT 条件输入不匹配");
-                return failure(@"DiT 固定条件输入形状不匹配。");
-            }
+            trace.record(@"DiT 将在每步重新传入全部五个输入");
             std::vector<float> velocity;
-            const size_t stepCount = highDiTProbe ? 2 : kTimesteps.size();
+            const size_t stepCount = twoStepProbe ? 2 : kTimesteps.size();
             for (size_t step = 0; step < stepCount; ++step) {
                 if (!trace.hasHeadroom()) {
                     trace.record(@"安全停止：剩余进程内存低于 512 MiB");
@@ -295,10 +298,13 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                 }
                 trace.record([NSString stringWithFormat:@"DiT %zu/8 开始", step + 1]);
                 float time = kTimesteps[step];
-                if (!setInput(*dit, "hidden_states", hidden.data(), hidden.size()) ||
+                if (!setInput(*dit, "encoder_hidden_states", encoder.data(), encoder.size()) ||
+                    !setInput(*dit, "context_latents", context.data(), context.size()) ||
+                    !setInput(*dit, "hidden_states", hidden.data(), hidden.size()) ||
                     !setInput(*dit, "timestep", &time, 1) ||
                     !setInput(*dit, "timestep_r", &time, 1)) {
-                    return failure(@"DiT 采样输入形状不匹配。");
+                    trace.record(@"失败：DiT 输入不匹配");
+                    return failure(@"DiT 输入形状不匹配或传入失败。");
                 }
                 const CFAbsoluteTime runStarted = CFAbsoluteTimeGetCurrent();
                 MNN::ErrorCode code = dit->interpreter->runSession(dit->session);
@@ -317,7 +323,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                     trace.record(message);
                     return failure(message);
                 }
-                if (highDiTProbe) {
+                if (twoStepProbe) {
                     const std::vector<float> &reference = step == 0 ? cpuStep1 : cpuStep2;
                     double squaredError = 0.0;
                     double squaredReference = 0.0;
@@ -346,9 +352,10 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                     velocityStats.peak, hiddenStats.peak]);
             }
         }
-        if (highDiTProbe) {
-            trace.record(@"DiT Metal High 两步完成；诊断结束，未运行 VAE");
-            return @{ @"success": @YES, @"message": @"DiT Metal High 两步输出均为有限值；请分享诊断日志。未运行 VAE，也未生成音频。",
+        if (twoStepProbe) {
+            NSString *precisionName = highPrecision ? @"High" : @"Low";
+            trace.record([NSString stringWithFormat:@"DiT Metal %@ 两步完成；诊断结束，未运行 VAE", precisionName]);
+            return @{ @"success": @YES, @"message": [NSString stringWithFormat:@"DiT Metal %@ 两步输出均为有限值；请分享诊断日志。未运行 VAE，也未生成音频。", precisionName],
                       @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started) };
         }
         trace.record(@"DiT 会话已释放；开始 VAE");
