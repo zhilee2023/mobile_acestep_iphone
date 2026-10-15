@@ -317,7 +317,7 @@ struct ContentView: View {
             .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
             Text("NoTune 整首仍待真机验证，可能因内存不足提前停止；固定基线和 NoTune 均不使用当前编辑的歌词或风格。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
-            Text("上方按钮是固定条件对照。下方完整生成会使用当前歌词和风格，串行运行 Qwen、歌词编码器、DiT 与 CPU VAE。")
+            Text("上方按钮是固定条件对照。下方两个完整生成入口都会使用当前歌词，串行运行 Qwen、歌词编码器、DiT 与 CPU VAE。")
                 .font(.caption2).foregroundStyle(.orange)
             Button { generateCustomSong() } label: {
                 HStack {
@@ -330,6 +330,19 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allCustomModelsPresent || isGenerating || isDiagnosingVAE)
+            Button { generateCustomSong(forceBundledCaption: true) } label: {
+                HStack {
+                    if isGenerating { ProgressView().tint(StudioPalette.background) }
+                    Text("直接用内置风格＋当前歌词生成（107 token）")
+                    Spacer()
+                    Image(systemName: "music.note")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allCustomModelsPresent || isGenerating || isDiagnosingVAE)
+            Text("此入口不读取上方风格输入框；它直接使用 App 内置的 304 字符风格，仍会编码你当前的歌词。")
+                .font(.caption2).foregroundStyle(StudioPalette.secondary)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
@@ -536,11 +549,12 @@ struct ContentView: View {
         }
     }
 
-    private func generateCustomSong() {
+    private func generateCustomSong(forceBundledCaption: Bool = false) {
         guard !isGenerating && !isDiagnosingVAE else { return }
         captionIsFocused = false
         let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-        let caption = (usesExactSampleCaption ? SongStudioStore.sampleCaption : studio.caption)
+        let useBundledCaption = forceBundledCaption || usesExactSampleCaption
+        let caption = (useBundledCaption ? SongStudioStore.sampleCaption : studio.caption)
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !lyrics.isEmpty else {
             generationMessage = "请先输入歌词。"
@@ -551,9 +565,9 @@ struct ContentView: View {
             return
         }
         isGenerating = true
-        generationMessage = usesExactSampleCaption
-            ? "已选内置示例风格；正在本机编码风格与歌词，再运行 DiT 与 CPU VAE…"
-            : "已选自定义风格；正在本机编码风格与歌词，再运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
+        generationMessage = useBundledCaption
+            ? "v26 内置风格直通；正在编码当前歌词并运行 Qwen、DiT 与 CPU VAE…"
+            : "v26 自定义风格；正在编码风格与歌词并运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
@@ -562,7 +576,8 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
-                self.generationMessage = result["message"] as? String ?? "歌词生成未返回结果。"
+                let mode = useBundledCaption ? "内置风格直通" : "自定义风格"
+                self.generationMessage = "v26 \(mode)：" + (result["message"] as? String ?? "歌词生成未返回结果。")
                 guard (result["success"] as? NSNumber)?.boolValue == true,
                       let path = result["wavPath"] as? String else {
                     self.metricsStore.cancelGeneration()
