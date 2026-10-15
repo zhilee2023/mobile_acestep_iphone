@@ -84,7 +84,7 @@ struct ContentView: View {
                     generationCard
                     playerCard
                     metricsCard
-                    Text("ACE-Step 1.5 · MNN W4 · iPhone 实验版")
+                    Text("ACE-Step 1.5 · MNN W4 · iPhone 实验版 v\(Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "?")")
                         .font(.caption2).foregroundStyle(StudioPalette.secondary)
                         .frame(maxWidth: .infinity).padding(.bottom, 22)
                 }
@@ -152,29 +152,35 @@ struct ContentView: View {
                 tag("女声样例")
             }
             Text("风格提示词").font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.secondary)
-            TextField("描述歌曲风格", text: Binding(
-                get: { studio.caption },
-                set: { newValue in
-                    // A focused TextField may submit stale edits after the restore button fires.
-                    // Ignore those commits while the exact bundled sample is selected.
-                    guard !usesExactSampleCaption || captionIsFocused else { return }
-                    studio.caption = newValue
-                    usesExactSampleCaption = false
-                }), axis: .vertical)
-                .focused($captionIsFocused)
-                .lineLimit(2...4)
-                .padding(13)
-                .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-            Button("使用内置示例风格（107 token）") {
-                captionIsFocused = false
-                studio.restoreSampleCaption()
-                usesExactSampleCaption = true
-            }
-                .font(.subheadline.weight(.medium))
-                .foregroundStyle(StudioPalette.mint)
             if usesExactSampleCaption {
-                Text("已选用内置示例；生成时将直接使用这份 304 字符文本。点入输入框修改后切回自定义风格。")
+                Text(SongStudioStore.sampleCaption)
+                    .font(.caption)
+                    .foregroundStyle(.white)
+                    .padding(13)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                Text("当前模式：内置示例（107 token）；生成时直接使用上方只读文本。")
+                    .font(.caption2).foregroundStyle(StudioPalette.mint)
+                Button("改为自定义风格") {
+                    studio.restoreSampleCaption()
+                    usesExactSampleCaption = false
+                }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(StudioPalette.violet)
+            } else {
+                TextField("描述歌曲风格", text: $studio.caption, axis: .vertical)
+                    .focused($captionIsFocused)
+                    .lineLimit(2...4)
+                    .padding(13)
+                    .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+                Text("当前模式：自定义风格；需恰好 107 token。")
                     .font(.caption2).foregroundStyle(StudioPalette.secondary)
+                Button("使用内置示例风格（107 token）") {
+                    captionIsFocused = false
+                    usesExactSampleCaption = true
+                }
+                    .font(.subheadline.weight(.medium))
+                    .foregroundStyle(StudioPalette.mint)
             }
             Text("完整生成会在手机上编码此风格；当前静态模型只接受恰好 107 个风格 token。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
@@ -545,7 +551,9 @@ struct ContentView: View {
             return
         }
         isGenerating = true
-        generationMessage = "正在本机编码风格与歌词，再运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
+        generationMessage = usesExactSampleCaption
+            ? "已选内置示例风格；正在本机编码风格与歌词，再运行 DiT 与 CPU VAE…"
+            : "已选自定义风格；正在本机编码风格与歌词，再运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
