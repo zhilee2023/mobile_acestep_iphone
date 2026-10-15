@@ -66,6 +66,9 @@ def main() -> None:
         xt -= velocity * np.float32(current - next_time)
         print(f"DiT {index + 1}/{len(TIMESTEPS)}: t={current:.6f}", flush=True)
 
+    # Bundle a representative post-DiT latent for isolated iPhone VAE tests.
+    # The diagnostic compares backends on identical data without loading DiT.
+    xt.astype("<f4", copy=False).tofile(PROBE / "vae-final-latent.f32")
     latents = np.transpose(xt, (0, 2, 1)).copy()
     del dit, dit_handle
     output = np.zeros((2, 750 * 1920), dtype=np.float32)

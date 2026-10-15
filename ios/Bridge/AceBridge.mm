@@ -160,5 +160,9 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runOptimizedFullSerialAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
+    return [FixedSongEngine diagnoseVAEAtDirectory:directory];
+}
+
 @end
 

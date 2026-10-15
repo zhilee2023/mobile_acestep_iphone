@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <utility>
 #include <vector>
 #include <unistd.h>
 
@@ -33,19 +34,21 @@ NSDictionary<NSString *, id> *failure(NSString *message) {
 
 struct InferenceTrace {
     FILE *file = nullptr;
+    uint64_t sampledPeak = 0;
 
-    InferenceTrace(bool twoStepProbe, bool highPrecision, bool optimizedVAE) {
+    InferenceTrace(bool twoStepProbe, bool highPrecision, bool optimizedVAE,
+                   NSString *customFilename = nil, NSString *customOpening = nil) {
         NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory
                                                                  inDomains:NSUserDomainMask].firstObject;
         NSURL *directory = [documents URLByAppendingPathComponent:@"Generated" isDirectory:YES];
         if (![NSFileManager.defaultManager createDirectoryAtURL:directory
                                     withIntermediateDirectories:YES attributes:nil error:nil]) return;
-        NSURL *url = [directory URLByAppendingPathComponent:@"last-inference.log"];
+        NSURL *url = [directory URLByAppendingPathComponent:customFilename ?: @"last-inference.log"];
         file = std::fopen(url.fileSystemRepresentation, "w");
-        record(twoStepProbe ? (highPrecision ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
+        record(customOpening ?: (twoStepProbe ? (highPrecision ? @"开始：DiT 两步诊断；Metal High、低内存模式；不运行 VAE"
                                              : @"开始：DiT 两步诊断；Metal Low、低内存模式；不运行 VAE")
                             : (optimizedVAE ? @"开始：30 秒固定样例；DiT Metal High、VAE Metal Low；优化串行／VAE 六段"
-                                            : @"开始：30 秒固定样例；DiT Metal High、VAE Metal Low、低内存模式"));
+                                            : @"开始：30 秒固定样例；DiT Metal High、VAE Metal Low、低内存模式")));
     }
 
     ~InferenceTrace() {
@@ -61,6 +64,7 @@ struct InferenceTrace {
         uint64_t footprint = 0;
         if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count)
                 == KERN_SUCCESS) footprint = info.phys_footprint;
+        sampledPeak = std::max(sampledPeak, footprint);
         std::fprintf(file, "%.3f\t%s\tfootprint=%llu MB\tavailable=%llu MB\n",
                      CFAbsoluteTimeGetCurrent(), phase.UTF8String,
                      static_cast<unsigned long long>(footprint / 1000000),
@@ -226,6 +230,151 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
     }
     return target;
 }
+
+struct VaeDiagnosticResult {
+    bool ok = false;
+    double loadSeconds = 0;
+    double createSeconds = 0;
+    double resizeSeconds = 0;
+    double firstSeconds = 0;
+    double secondSeconds = 0;
+    uint64_t peakBytes = 0;
+    int mainBackend = -1;
+    std::vector<float> output;
+};
+
+bool waitForVaeHeadroom(InferenceTrace &trace, NSString *name) {
+    constexpr size_t required = 2400000000ULL;
+    int consecutivePasses = 0;
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    while (CFAbsoluteTimeGetCurrent() - started < 10.0) {
+        const size_t available = trace.availableBytes();
+        consecutivePasses = available >= required ? consecutivePasses + 1 : 0;
+        if (consecutivePasses >= 2) {
+            trace.record([NSString stringWithFormat:@"%@：内存门槛通过，等待 %.3f 秒", name,
+                          CFAbsoluteTimeGetCurrent() - started]);
+            return true;
+        }
+        usleep(250000);
+    }
+    trace.record([NSString stringWithFormat:@"%@：可用内存未恢复到 2400 MB，停止测试", name]);
+    return false;
+}
+
+VaeDiagnosticResult runVaeDiagnosticCase(NSString *path, NSString *name,
+                                         MNNForwardType backendType,
+                                         MNN::BackendConfig::PrecisionMode precision,
+                                         bool deferred, int gpuMode,
+                                         const std::vector<float> &latent,
+                                         InferenceTrace &trace) {
+    VaeDiagnosticResult result;
+    if (!waitForVaeHeadroom(trace, name)) return result;
+    trace.sampledPeak = 0;
+    trace.record([NSString stringWithFormat:@"%@ 开始：%@，%@，Memory Low；相同 192 帧输入",
+                  name, backendType == MNN_FORWARD_CPU ? @"CPU" : @"Metal",
+                  deferred ? @"延迟 resize" : @"常规 createSession"]);
+    {
+        Graph graph;
+        const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
+        graph.interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
+        result.loadSeconds = CFAbsoluteTimeGetCurrent() - loadStarted;
+        trace.record([NSString stringWithFormat:@"%@：createFromFile %.3f 秒", name, result.loadSeconds]);
+        if (!graph.interpreter) return result;
+        if (deferred) graph.interpreter->setSessionMode(MNN::Interpreter::Session_Resize_Defer);
+        MNN::BackendConfig backend;
+        backend.precision = precision;
+        backend.memory = MNN::BackendConfig::Memory_Low;
+        MNN::ScheduleConfig config;
+        config.type = backendType;
+        config.mode = backendType == MNN_FORWARD_METAL ? gpuMode : 4;
+        config.backupType = MNN_FORWARD_CPU;
+        config.backendConfig = &backend;
+        const CFAbsoluteTime createStarted = CFAbsoluteTimeGetCurrent();
+        graph.session = graph.interpreter->createSession(config);
+        result.createSeconds = CFAbsoluteTimeGetCurrent() - createStarted;
+        trace.record([NSString stringWithFormat:@"%@：createSession %.3f 秒%@", name,
+                      result.createSeconds, deferred ? @"（未包含显式 resize）" : @"（包含初始 resize）"]);
+        if (!graph.session) return result;
+        if (deferred) {
+            const CFAbsoluteTime resizeStarted = CFAbsoluteTimeGetCurrent();
+            graph.interpreter->resizeSession(graph.session);
+            result.resizeSeconds = CFAbsoluteTimeGetCurrent() - resizeStarted;
+            trace.record([NSString stringWithFormat:@"%@：显式 resizeSession %.3f 秒", name, result.resizeSeconds]);
+            int resizeStatus = -1;
+            if (!graph.interpreter->getSessionInfo(graph.session, MNN::Interpreter::RESIZE_STATUS, &resizeStatus)
+                || resizeStatus != 0) {
+                trace.record([NSString stringWithFormat:@"%@：resize 状态 %d，停止", name, resizeStatus]);
+                return result;
+            }
+        }
+        int actualBackends[2] = {-1, -1};
+        if (graph.interpreter->getSessionInfo(graph.session, MNN::Interpreter::BACKENDS, actualBackends)) {
+            result.mainBackend = actualBackends[0];
+            trace.record([NSString stringWithFormat:@"%@：主 pipeline backend=%d（CPU=0，Metal=1；不代表逐算子均在该后端）",
+                          name, actualBackends[0]]);
+            if (backendType == MNN_FORWARD_METAL && actualBackends[0] != MNN_FORWARD_METAL) {
+                trace.record([NSString stringWithFormat:@"%@：未获得 Metal 主 pipeline，停止该组", name]);
+                return result;
+            }
+        }
+        graph.interpreter->releaseModel();
+        for (int run = 0; run < 2; ++run) {
+            const size_t needed = run == 0 ? 1200000000ULL : kMinimumAvailableBytes;
+            if (trace.availableBytes() < needed) {
+                trace.record([NSString stringWithFormat:@"%@：第 %d 次前向前内存不足 %.0f MB，安全停止",
+                              name, run + 1, needed / 1000000.0]);
+                return result;
+            }
+            if (!setInput(graph, "latents", latent.data(), latent.size())) {
+                trace.record([NSString stringWithFormat:@"%@：输入形状不匹配", name]);
+                return result;
+            }
+            const CFAbsoluteTime runStarted = CFAbsoluteTimeGetCurrent();
+            const MNN::ErrorCode code = graph.interpreter->runSession(graph.session);
+            const CFAbsoluteTime runEnded = CFAbsoluteTimeGetCurrent();
+            std::vector<float> output;
+            const bool readOK = code == MNN::NO_ERROR &&
+                readOutput(graph, "waveform", static_cast<size_t>(2) * kVaeWindowFrames * kUpsample, output);
+            const CFAbsoluteTime readEnded = CFAbsoluteTimeGetCurrent();
+            if (!readOK) {
+                trace.record([NSString stringWithFormat:@"%@：第 %d 次前向失败，MNN=%d", name, run + 1, static_cast<int>(code)]);
+                return result;
+            }
+            const TensorStats stats = tensorStats(output);
+            if (!stats.finite) {
+                trace.record([NSString stringWithFormat:@"%@：第 %d 次输出非有限值，位置 %zu", name, run + 1, stats.invalidIndex]);
+                return result;
+            }
+            if (stats.peak < 1e-6f) {
+                trace.record([NSString stringWithFormat:@"%@：第 %d 次输出接近静音，停止", name, run + 1]);
+                return result;
+            }
+            const double elapsed = readEnded - runStarted;
+            if (run == 0) result.firstSeconds = elapsed;
+            else result.secondSeconds = elapsed;
+            result.output = std::move(output);
+            trace.record([NSString stringWithFormat:@"%@：第 %d 次 run=%.3f 秒，read/sync=%.3f 秒，总计 %.3f 秒，峰值 %.8g",
+                          name, run + 1, runEnded - runStarted, readEnded - runEnded, elapsed, stats.peak]);
+        }
+        result.ok = true;
+        result.peakBytes = trace.sampledPeak;
+    }
+    trace.record([NSString stringWithFormat:@"%@：会话已释放；采样峰值 %.0f MB", name,
+                  result.peakBytes / 1000000.0]);
+    return result;
+}
+
+double relativeL2(const std::vector<float> &actual, const std::vector<float> &reference) {
+    if (actual.size() != reference.size() || actual.empty()) return NAN;
+    double error = 0.0;
+    double energy = 0.0;
+    for (size_t i = 0; i < actual.size(); ++i) {
+        const double difference = static_cast<double>(actual[i]) - reference[i];
+        error += difference * difference;
+        energy += static_cast<double>(reference[i]) * reference[i];
+    }
+    return std::sqrt(error / std::max(energy, 1e-20));
+}
 } // namespace
 
 @interface FixedSongEngine ()
@@ -234,6 +383,73 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
 @end
 
 @implementation FixedSongEngine
+
++ (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
+    @autoreleasepool {
+        InferenceTrace trace(false, false, false, @"vae-diagnostic.log",
+                             @"开始：VAE 192 帧五组独立会话；CPU High/Low、Metal Low Wide/NoTune；记录 create/resize/前向/同步/内存；不生成歌曲");
+        const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+        NSString *path = [directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"];
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+            trace.record(@"失败：VAE 模型文件缺失");
+            return failure(@"VAE 192 帧模型文件缺失。");
+        }
+        std::vector<float> finalLatent;
+        if (!loadFixture(@"vae-final-latent", static_cast<size_t>(kLatentFrames) * kLatentChannels, finalLatent)) {
+            trace.record(@"失败：诊断 latent 缺失");
+            return failure(@"VAE 诊断输入缺失，请重新安装诊断版。");
+        }
+        // Use an interior window of the post-DiT latent, not arbitrary noise.
+        constexpr int windowStart = 256;
+        std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
+        for (int channel = 0; channel < kLatentChannels; ++channel) {
+            for (int frame = 0; frame < kVaeWindowFrames; ++frame) {
+                latent[channel * kVaeWindowFrames + frame] =
+                    finalLatent[(windowStart + frame) * kLatentChannels + channel];
+            }
+        }
+        const TensorStats inputStats = tensorStats(latent);
+        if (!inputStats.finite) return failure(@"VAE 诊断输入含非有限值。");
+        trace.record([NSString stringWithFormat:@"固定输入：DiT 后 latent 第 %d–%d 帧，峰值 %.8g",
+                      windowStart, windowStart + kVaeWindowFrames - 1, inputStats.peak]);
+
+        const VaeDiagnosticResult cpuHigh = runVaeDiagnosticCase(path, @"CPU High / 延迟 resize",
+            MNN_FORWARD_CPU, MNN::BackendConfig::Precision_High, true, 0, latent, trace);
+        if (!cpuHigh.ok) return failure(@"CPU High 基线未完成；请分享 VAE 诊断日志。");
+        const VaeDiagnosticResult cpuLow = runVaeDiagnosticCase(path, @"CPU Low / 常规会话",
+            MNN_FORWARD_CPU, MNN::BackendConfig::Precision_Low, false, 0, latent, trace);
+        if (!cpuLow.ok) return failure(@"CPU Low 测试未完成；请分享 VAE 诊断日志。");
+        trace.record([NSString stringWithFormat:@"CPU Low 相对 CPU High 输出 L2 = %.8g",
+                      relativeL2(cpuLow.output, cpuHigh.output)]);
+
+        const VaeDiagnosticResult metalDeferred = runVaeDiagnosticCase(path, @"Metal Low / Wide / 延迟 resize",
+            MNN_FORWARD_METAL, MNN::BackendConfig::Precision_Low, true, MNN_GPU_TUNING_WIDE, latent, trace);
+        if (!metalDeferred.ok) return failure(@"Metal Low 延迟 resize 测试未完成；请分享 VAE 诊断日志。");
+        trace.record([NSString stringWithFormat:@"Metal Low 延迟 resize 相对 CPU Low 输出 L2 = %.8g",
+                      relativeL2(metalDeferred.output, cpuLow.output)]);
+
+        const VaeDiagnosticResult metalDirect = runVaeDiagnosticCase(path, @"Metal Low / Wide / 常规会话重复",
+            MNN_FORWARD_METAL, MNN::BackendConfig::Precision_Low, false, MNN_GPU_TUNING_WIDE, latent, trace);
+        if (!metalDirect.ok) return failure(@"Metal Low 常规会话复测未完成；请分享 VAE 诊断日志。");
+        const double sameBackendL2 = relativeL2(metalDirect.output, metalDeferred.output);
+        trace.record([NSString stringWithFormat:@"Metal Low 常规 vs 延迟 resize 输出 L2 = %.8g", sameBackendL2]);
+        const VaeDiagnosticResult metalNoTune = runVaeDiagnosticCase(path, @"Metal Low / NoTune / 常规会话",
+            MNN_FORWARD_METAL, MNN::BackendConfig::Precision_Low, false, MNN_GPU_TUNING_NONE, latent, trace);
+        if (!metalNoTune.ok) return failure(@"Metal Low 禁用调优测试未完成；请分享 VAE 诊断日志。");
+        const double noTuneL2 = relativeL2(metalNoTune.output, metalDirect.output);
+        trace.record([NSString stringWithFormat:@"Metal NoTune 相对 Wide 输出 L2 = %.8g；创建 %.3f vs %.3f 秒；第二次解码 %.3f vs %.3f 秒",
+                      noTuneL2, metalNoTune.createSeconds, metalDirect.createSeconds,
+                      metalNoTune.secondSeconds, metalDirect.secondSeconds]);
+        trace.record([NSString stringWithFormat:
+            @"诊断完成；总耗时 %.3f 秒；CPU High create+resize=%.3f；CPU Low create=%.3f；Metal Low Wide 延迟 create=%.3f resize=%.3f；Wide 常规 create=%.3f；NoTune create=%.3f；NoTune 对 Wide L2=%.8g",
+            CFAbsoluteTimeGetCurrent() - started, cpuHigh.createSeconds + cpuHigh.resizeSeconds,
+            cpuLow.createSeconds, metalDeferred.createSeconds, metalDeferred.resizeSeconds,
+            metalDirect.createSeconds, metalNoTune.createSeconds, noTuneL2]);
+        return @{ @"success": @YES,
+                  @"message": @"VAE 五组 CPU/Metal 对照完成；请分享 VAE 诊断日志。此测试不生成音频，也不改变歌词。",
+                  @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started) };
+    }
+}
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
     return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO];

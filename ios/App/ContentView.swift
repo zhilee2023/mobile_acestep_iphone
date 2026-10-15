@@ -18,6 +18,9 @@ struct ContentView: View {
     @State private var importingAudio = false
     @State private var showsModelDetails = false
     @State private var isGenerating = false
+    @State private var isDiagnosingVAE = false
+    @State private var vaeMessage = "尚未运行 VAE 对照测试。"
+    @State private var vaePhase = ""
     @State private var generationMessage = "模型文件齐全后即可生成固定样例。"
     @State private var generationTrace = "尚无诊断记录"
 
@@ -31,6 +34,11 @@ struct ContentView: View {
             .appendingPathComponent("Generated/encoder-optimized-serial.log")
     }
 
+    private var vaeDiagnosticURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/vae-diagnostic.log")
+    }
+
     var body: some View {
         ZStack {
             StudioPalette.background.ignoresSafeArea()
@@ -41,6 +49,7 @@ struct ContentView: View {
                     lyricsCard
                     modelCard
                     generationCard
+                    vaeDiagnosticCard
                     playerCard
                     metricsCard
                     Text("ACE-Step 1.5 · MNN W4 · iPhone 实验版")
@@ -71,8 +80,12 @@ struct ContentView: View {
         }
         .onReceive(Timer.publish(every: 1, on: .main, in: .common).autoconnect()) { _ in
             refreshGenerationTrace()
+            refreshVaePhase()
         }
-        .onAppear { refreshGenerationTrace() }
+        .onAppear {
+            refreshGenerationTrace()
+            refreshVaePhase()
+        }
     }
 
     private var header: some View {
@@ -234,7 +247,7 @@ struct ContentView: View {
                 .frame(maxWidth: .infinity)
             }
             .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating)
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
             Text("Encoder 输出尚未接入 DiT；编辑的歌词不会改变本次固定样例。")
                 .font(.caption2).foregroundStyle(.orange)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
@@ -256,6 +269,59 @@ struct ContentView: View {
         .studioCard()
     }
 
+    private var vaeDiagnosticCard: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            heading("VAE 慢启动诊断", icon: "stethoscope")
+            Text("依次比较 CPU、Metal 默认调优和 Metal 禁用调优的模型读取、会话创建、初始 resize、两次解码及内存；使用相同的固定输入，不生成歌曲。可能需要数分钟。")
+                .font(.subheadline).foregroundStyle(StudioPalette.secondary)
+            Button { diagnoseVAE() } label: {
+                HStack {
+                    if isDiagnosingVAE { ProgressView().tint(StudioPalette.background) }
+                    Text(isDiagnosingVAE ? "正在诊断 VAE…" : "开始 VAE 五组对照")
+                    Spacer()
+                    Image(systemName: "timer")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Text(vaeMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
+            if !vaePhase.isEmpty {
+                Text("最近阶段：\(vaePhase)")
+                    .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
+            }
+            if FileManager.default.fileExists(atPath: vaeDiagnosticURL.path) {
+                ShareLink(item: vaeDiagnosticURL) {
+                    Label("分享 VAE 诊断日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+        }
+        .studioCard()
+    }
+
+    private func refreshVaePhase() {
+        guard let content = try? String(contentsOf: vaeDiagnosticURL, encoding: .utf8),
+              let line = content.split(whereSeparator: \.isNewline).last else { return }
+        vaePhase = line.split(separator: "\t").dropFirst().joined(separator: " · ")
+    }
+
+    private func diagnoseVAE() {
+        guard !isGenerating && !isDiagnosingVAE else { return }
+        isDiagnosingVAE = true
+        vaeMessage = "正在逐组运行 CPU 和 Metal，请保持 App 在前台…"
+        vaePhase = "正在启动…"
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.diagnoseVAE(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isDiagnosingVAE = false
+                self.refreshVaePhase()
+                self.vaeMessage = result["message"] as? String ?? "VAE 诊断未返回结果。"
+            }
+        }
+    }
+
     private func refreshGenerationTrace() {
         let candidates = [optimizedSerialTraceURL, traceURL]
         let latest = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
@@ -272,7 +338,7 @@ struct ContentView: View {
     }
 
     private func generateOptimizedSerialSong() {
-        guard !isGenerating else { return }
+        guard !isGenerating && !isDiagnosingVAE else { return }
         isGenerating = true
         generationMessage = "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
         generationTrace = "正在启动…"

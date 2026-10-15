@@ -91,3 +91,10 @@ def test_encoder_benchmark_fixture() -> None:
     assert np.all(ids >= 0)
     assert np.all(ids <= np.iinfo(np.int32).max)
 
+
+def test_vae_diagnostic_fixture() -> None:
+    latent = np.fromfile(ROOT / "ios" / "Probe" / "vae-final-latent.f32", dtype="<f4")
+    assert latent.shape == (750 * 64,)
+    assert np.isfinite(latent).all()
+    assert 1 < np.max(np.abs(latent)) < 100
+
