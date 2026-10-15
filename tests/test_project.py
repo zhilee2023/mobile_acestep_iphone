@@ -106,3 +106,20 @@ def test_lyric_tokenizer_bundle_and_probe() -> None:
     assert (ROOT / "ios" / "Tokenizer" / "tokenizer.json").stat().st_size > 10_000_000
     assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
 
+
+def test_v20_vae_comparison_is_separate_from_default_generation() -> None:
+    import plistlib
+
+    info = plistlib.loads((ROOT / "ios" / "Info.plist").read_bytes())
+    assert info["CFBundleVersion"] == "20"
+    engine = (ROOT / "ios" / "Bridge" / "FixedSongEngine.mm").read_text(encoding="utf-8")
+    benchmark = (ROOT / "ios" / "Bridge" / "EncoderBenchmark.mm").read_text(encoding="utf-8")
+    ui = (ROOT / "ios" / "App" / "ContentView.swift").read_text(encoding="utf-8")
+    assert 'vae-notune-diagnostic.log' in engine
+    assert 'MNN_GPU_TUNING_NONE' in engine
+    assert 'last-inference-cpu-vae.log' in engine
+    assert 'cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL' in engine
+    assert 'encoder-cpu-vae-serial.log' in benchmark
+    assert '单独测 VAE NoTune' in ui
+    assert '生成 CPU Low VAE 对照歌曲' in ui
+

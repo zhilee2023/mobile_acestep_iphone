@@ -105,7 +105,8 @@ TensorStats tensorStats(const std::vector<float> &values) {
 }
 
 std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace,
-                                 MNN::BackendConfig::PrecisionMode precision) {
+                                 MNN::BackendConfig::PrecisionMode precision,
+                                 MNNForwardType backendType = MNN_FORWARD_METAL) {
     auto graph = std::make_unique<Graph>();
     const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
@@ -116,7 +117,8 @@ std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace,
     backend.precision = precision;
     backend.memory = MNN::BackendConfig::Memory_Low;
     MNN::ScheduleConfig config;
-    config.type = MNN_FORWARD_METAL;
+    config.type = backendType;
+    if (backendType == MNN_FORWARD_CPU) config.numThread = 4;
     config.backupType = MNN_FORWARD_CPU;
     config.backendConfig = &backend;
     const CFAbsoluteTime sessionStarted = CFAbsoluteTimeGetCurrent();
@@ -175,7 +177,7 @@ void put32(std::vector<uint8_t> &data, size_t offset, uint32_t value) {
     for (int index = 0; index < 4; ++index) data[offset + index] = static_cast<uint8_t>(value >> (8 * index));
 }
 
-NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
+NSURL *saveWAV(const std::vector<float> &audio, NSString **reason, NSString *prefix) {
     float peak = 0.0f;
     for (size_t index = 0; index < audio.size(); ++index) {
         float sample = audio[index];
@@ -220,7 +222,7 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
         if (reason) *reason = [NSString stringWithFormat:@"创建音频目录失败：%@", directoryError.localizedDescription];
         return nil;
     }
-    NSString *filename = [NSString stringWithFormat:@"fixed-30s-w4-%@.wav", [[NSUUID UUID] UUIDString]];
+    NSString *filename = [NSString stringWithFormat:@"%@-%@.wav", prefix, [[NSUUID UUID] UUIDString]];
     NSURL *target = [directory URLByAppendingPathComponent:filename];
     NSData *data = [NSData dataWithBytesNoCopy:wave.data() length:wave.size() freeWhenDone:NO];
     NSError *writeError = nil;
@@ -259,6 +261,22 @@ bool waitForVaeHeadroom(InferenceTrace &trace, NSString *name) {
     }
     trace.record([NSString stringWithFormat:@"%@：可用内存未恢复到 2400 MB，停止测试", name]);
     return false;
+}
+
+bool loadVaeDiagnosticLatent(std::vector<float> &latent) {
+    std::vector<float> finalLatent;
+    if (!loadFixture(@"vae-final-latent", static_cast<size_t>(kLatentFrames) * kLatentChannels, finalLatent)) {
+        return false;
+    }
+    constexpr int windowStart = 256;
+    latent.resize(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
+    for (int channel = 0; channel < kLatentChannels; ++channel) {
+        for (int frame = 0; frame < kVaeWindowFrames; ++frame) {
+            latent[channel * kVaeWindowFrames + frame] =
+                finalLatent[(windowStart + frame) * kLatentChannels + channel];
+        }
+    }
+    return tensorStats(latent).finite;
 }
 
 VaeDiagnosticResult runVaeDiagnosticCase(NSString *path, NSString *name,
@@ -380,7 +398,7 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 @interface FixedSongEngine ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
                                    highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
-                                        condition:(NSData *)condition;
+                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE;
 @end
 
 @implementation FixedSongEngine
@@ -395,20 +413,12 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
             trace.record(@"失败：VAE 模型文件缺失");
             return failure(@"VAE 192 帧模型文件缺失。");
         }
-        std::vector<float> finalLatent;
-        if (!loadFixture(@"vae-final-latent", static_cast<size_t>(kLatentFrames) * kLatentChannels, finalLatent)) {
+        std::vector<float> latent;
+        if (!loadVaeDiagnosticLatent(latent)) {
             trace.record(@"失败：诊断 latent 缺失");
             return failure(@"VAE 诊断输入缺失，请重新安装诊断版。");
         }
-        // Use an interior window of the post-DiT latent, not arbitrary noise.
         constexpr int windowStart = 256;
-        std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
-        for (int channel = 0; channel < kLatentChannels; ++channel) {
-            for (int frame = 0; frame < kVaeWindowFrames; ++frame) {
-                latent[channel * kVaeWindowFrames + frame] =
-                    finalLatent[(windowStart + frame) * kLatentChannels + channel];
-            }
-        }
         const TensorStats inputStats = tensorStats(latent);
         if (!inputStats.finite) return failure(@"VAE 诊断输入含非有限值。");
         trace.record([NSString stringWithFormat:@"固定输入：DiT 后 latent 第 %d–%d 帧，峰值 %.8g",
@@ -452,36 +462,73 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
     }
 }
 
++ (NSDictionary<NSString *, id> *)diagnoseVAENoTuneAtDirectory:(NSString *)directory {
+    @autoreleasepool {
+        InferenceTrace trace(false, false, false, @"vae-notune-diagnostic.log",
+                             @"开始：独立 VAE 192 帧 Metal Low / NoTune；固定输入、两次前向；不运行其他四组，不生成歌曲");
+        NSString *path = [directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"];
+        if (![NSFileManager.defaultManager fileExistsAtPath:path]) {
+            trace.record(@"失败：VAE 模型文件缺失");
+            return failure(@"VAE 192 帧模型文件缺失。");
+        }
+        std::vector<float> latent;
+        if (!loadVaeDiagnosticLatent(latent)) {
+            trace.record(@"失败：诊断 latent 缺失或非有限值");
+            return failure(@"VAE 诊断输入缺失或异常，请重新安装诊断版。");
+        }
+        trace.record([NSString stringWithFormat:@"固定输入：DiT 后 latent 第 256–447 帧，峰值 %.8g",
+                      tensorStats(latent).peak]);
+        const VaeDiagnosticResult result = runVaeDiagnosticCase(
+            path, @"Metal Low / NoTune / 独立会话", MNN_FORWARD_METAL,
+            MNN::BackendConfig::Precision_Low, false, MNN_GPU_TUNING_NONE, latent, trace);
+        if (!result.ok) {
+            trace.record(@"NoTune 未完成；未做性能或音质结论");
+            return failure(@"NoTune 测试未完成；请分享独立诊断日志。若内存不足，请关闭并重新打开 App 后再测。");
+        }
+        trace.record([NSString stringWithFormat:@"NoTune 完成：创建 %.3f 秒；首次解码 %.3f 秒；第二次解码 %.3f 秒；主 backend=%d；输出含有限值，峰值 %.8g；采样峰值 %.0f MB",
+                      result.createSeconds, result.firstSeconds, result.secondSeconds,
+                      result.mainBackend, tensorStats(result.output).peak, result.peakBytes / 1000000.0]);
+        return @{ @"success": @YES,
+                  @"message": @"独立 NoTune 诊断完成；请分享日志。输出有限且非静音，但尚未验证整首音质。" };
+    }
+}
+
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO condition:nil];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)generateOptimizedAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:NO];
+}
+
++ (NSDictionary<NSString *, id> *)generateOptimizedCpuVAEAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:YES];
 }
 
 + (NSDictionary<NSString *, id> *)generateWithCondition:(NSData *)condition atDirectory:(NSString *)directory {
     if (condition.length != static_cast<size_t>(181) * 2048 * sizeof(float)) {
         return failure(@"自定义歌词条件形状不正确。");
     }
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition cpuVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO condition:nil];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepLowAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO condition:nil];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO condition:nil cpuVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
                                    highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
-                                        condition:(NSData *)condition {
+                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE {
     @autoreleasepool {
-        InferenceTrace trace(twoStepProbe, highPrecision, optimizedVAE, nil,
-                             condition ? @"开始：30 秒自定义歌词；固定风格；DiT Metal High → VAE Metal Low；VAE 六段"
-                                       : nil);
+        InferenceTrace trace(twoStepProbe, highPrecision, optimizedVAE,
+                             cpuVAE ? @"last-inference-cpu-vae.log" : nil,
+                             cpuVAE ? @"开始：30 秒固定样例；DiT Metal High → VAE CPU Low；VAE 六段"
+                                    : (condition ? @"开始：30 秒自定义歌词；固定风格；DiT Metal High → VAE Metal Low；VAE 六段"
+                                                 : nil));
         const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
         std::vector<float> hidden, encoder, context;
@@ -611,10 +658,20 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
         {
             // Reuse one 192-frame graph. The optimized 128-frame core keeps
             // 32 frames of context on each side, validated against 64/64.
-            trace.record(@"开始创建唯一的 VAE 192 帧会话");
+            trace.record(cpuVAE ? @"开始创建唯一的 VAE 192 帧 CPU Low 会话"
+                                : @"开始创建唯一的 VAE 192 帧 Metal Low 会话");
             auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace,
-                                 MNN::BackendConfig::Precision_Low);
+                                 MNN::BackendConfig::Precision_Low,
+                                 cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL);
             if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
+            int actualBackends[2] = {-1, -1};
+            if (vae->interpreter->getSessionInfo(vae->session, MNN::Interpreter::BACKENDS, actualBackends)) {
+                trace.record([NSString stringWithFormat:@"VAE 主 pipeline backend=%d（CPU Low 可为 13/CPU Extension；Metal=1）",
+                              actualBackends[0]]);
+                if (cpuVAE && actualBackends[0] != MNN_FORWARD_CPU && actualBackends[0] != 13) {
+                    return failure(@"VAE CPU Low 对照未使用 CPU 后端，已停止。");
+                }
+            }
             trace.record(@"VAE 192 帧会话已创建");
             std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
             std::vector<float> decoded;
@@ -679,16 +736,21 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
         }
         if (written != kSamples) return failure(@"VAE 拼接后的音频长度不等于 30 秒。");
         NSString *saveError = nil;
-        NSURL *target = saveWAV(audio, &saveError);
+        NSString *filenamePrefix = condition ? @"custom-lyrics-30s-w4-metal-vae"
+                                             : (cpuVAE ? @"fixed-30s-w4-cpu-vae" : @"fixed-30s-w4-metal-vae");
+        NSURL *target = saveWAV(audio, &saveError, filenamePrefix);
         if (!target) {
             NSString *message = saveError ?: @"写入 WAV 失败，系统未提供原因。";
             trace.record(message);
             return failure(message);
         }
         trace.record(@"WAV 已保存；生成完成");
-        return @{ @"success": @YES, @"message": [NSString stringWithFormat:@"iPhone 已完成 DiT 八步及 VAE %d 段推理。歌词条件为预计算固定样例。", vaeChunks],
+        return @{ @"success": @YES, @"message": [NSString stringWithFormat:@"iPhone 已完成 DiT 八步及 VAE %d 段推理。%@；歌词条件为%@。", vaeChunks,
+                       cpuVAE ? @"VAE CPU Low" : @"VAE Metal Low",
+                       condition ? @"本机编码的新歌词" : @"预计算固定样例"],
                   @"wavPath": target.path, @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started),
-                  @"audioSeconds": @30.0, @"backend": @"MNN Metal 请求 / CPU 回退可能" };
+                  @"audioSeconds": @30.0,
+                  @"backend": cpuVAE ? @"DiT Metal 请求 / VAE CPU Low" : @"MNN Metal 请求 / CPU 回退可能" };
     }
 }
 

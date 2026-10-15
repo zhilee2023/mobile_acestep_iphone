@@ -11,7 +11,9 @@ NS_ASSUME_NONNULL_BEGIN
 + (NSDictionary<NSString *, id> *)runEncoderDiTSerialProbeAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateFullSerialSongAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateOptimizedSerialSongAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)generateCpuVaeSerialSongAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory;
++ (NSDictionary<NSString *, id> *)diagnoseVAENoTuneAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateFixedSongAtDirectory:(NSString *)directory;
 + (NSDictionary<NSString *, id> *)generateCustomLyrics:(NSString *)lyrics atDirectory:(NSString *)directory;
 @end

@@ -21,6 +21,7 @@ struct ContentView: View {
     @State private var isDiagnosingVAE = false
     @State private var vaeMessage = "尚未运行 VAE 对照测试。"
     @State private var vaePhase = ""
+    @State private var activeVaeTraceURL: URL?
     @State private var generationMessage = "模型文件齐全后即可生成固定样例。"
     @State private var generationTrace = "尚无诊断记录"
 
@@ -37,6 +38,21 @@ struct ContentView: View {
     private var vaeDiagnosticURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("Generated/vae-diagnostic.log")
+    }
+
+    private var vaeNoTuneURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/vae-notune-diagnostic.log")
+    }
+
+    private var cpuVaeSerialTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/encoder-cpu-vae-serial.log")
+    }
+
+    private var cpuVaeInferenceTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/last-inference-cpu-vae.log")
     }
 
     var body: some View {
@@ -235,7 +251,7 @@ struct ContentView: View {
     private var generationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
-            Text("手机依次运行 Encoder、DiT 八步和 VAE 六段，输出 30 秒 WAV。当前仍使用固定歌词条件。")
+            Text("固定样例：手机依次运行 Encoder 测试、DiT 八步和 VAE 六段，输出 30 秒 WAV。Encoder 输出尚未接入 DiT。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
             Button { generateOptimizedSerialSong() } label: {
                 HStack {
@@ -248,6 +264,18 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Button { generateOptimizedSerialSong(cpuVAE: true) } label: {
+                HStack {
+                    Text("生成 CPU Low VAE 对照歌曲")
+                    Spacer()
+                    Image(systemName: "cpu")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Text("CPU 对照只切换 VAE 后端；仍使用相同固定歌词、DiT 八步和六段拼接。请比较两首 WAV 的时间及听感。")
+                .font(.caption2).foregroundStyle(StudioPalette.secondary)
             Text("上方按钮仍是固定歌词对照。新歌词请用下方试验按钮；风格条件暂不变。")
                 .font(.caption2).foregroundStyle(.orange)
             Button { generateCustomLyricsSong() } label: {
@@ -276,6 +304,18 @@ struct ContentView: View {
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
+            if FileManager.default.fileExists(atPath: cpuVaeSerialTraceURL.path) {
+                ShareLink(item: cpuVaeSerialTraceURL) {
+                    Label("分享 CPU VAE 生成耗时", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: cpuVaeInferenceTraceURL.path) {
+                ShareLink(item: cpuVaeInferenceTraceURL) {
+                    Label("分享 CPU VAE 推理日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
         }
         .studioCard()
     }
@@ -283,8 +323,18 @@ struct ContentView: View {
     private var vaeDiagnosticCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             heading("VAE 慢启动诊断", icon: "stethoscope")
-            Text("依次比较 CPU、Metal 默认调优和 Metal 禁用调优的模型读取、会话创建、初始 resize、两次解码及内存；使用相同的固定输入，不生成歌曲。可能需要数分钟。")
+            Text("先单独测 Metal NoTune，避免五组测试后的内存残留挡住最后一组。五组对照保留；两者均不生成歌曲。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
+            Button { diagnoseVAE(standaloneNoTune: true) } label: {
+                HStack {
+                    Text("单独测 VAE NoTune")
+                    Spacer()
+                    Image(systemName: "timer")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
             Button { diagnoseVAE() } label: {
                 HStack {
                     if isDiagnosingVAE { ProgressView().tint(StudioPalette.background) }
@@ -307,24 +357,34 @@ struct ContentView: View {
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
+            if FileManager.default.fileExists(atPath: vaeNoTuneURL.path) {
+                ShareLink(item: vaeNoTuneURL) {
+                    Label("分享 NoTune 独立日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
         }
         .studioCard()
     }
 
     private func refreshVaePhase() {
-        guard let content = try? String(contentsOf: vaeDiagnosticURL, encoding: .utf8),
+        guard let content = try? String(contentsOf: activeVaeTraceURL ?? vaeDiagnosticURL, encoding: .utf8),
               let line = content.split(whereSeparator: \.isNewline).last else { return }
         vaePhase = line.split(separator: "\t").dropFirst().joined(separator: " · ")
     }
 
-    private func diagnoseVAE() {
+    private func diagnoseVAE(standaloneNoTune: Bool = false) {
         guard !isGenerating && !isDiagnosingVAE else { return }
         isDiagnosingVAE = true
-        vaeMessage = "正在逐组运行 CPU 和 Metal，请保持 App 在前台…"
+        activeVaeTraceURL = standaloneNoTune ? vaeNoTuneURL : vaeDiagnosticURL
+        vaeMessage = standaloneNoTune ? "正在单独测 Metal NoTune，请保持 App 在前台…"
+                                      : "正在逐组运行 CPU 和 Metal，请保持 App 在前台…"
         vaePhase = "正在启动…"
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.diagnoseVAE(atDirectory: directory)
+            let result = standaloneNoTune
+                ? AceBridge.diagnoseVAENoTune(atDirectory: directory)
+                : AceBridge.diagnoseVAE(atDirectory: directory)
             DispatchQueue.main.async {
                 self.isDiagnosingVAE = false
                 self.refreshVaePhase()
@@ -334,7 +394,8 @@ struct ContentView: View {
     }
 
     private func refreshGenerationTrace() {
-        let candidates = [optimizedSerialTraceURL, traceURL]
+        let candidates = [optimizedSerialTraceURL, cpuVaeSerialTraceURL,
+                          cpuVaeInferenceTraceURL, traceURL]
         let latest = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
             .max { left, right in
                 let leftDate = (try? left.resourceValues(forKeys: [.contentModificationDateKey]))?.contentModificationDate ?? .distantPast
@@ -348,15 +409,19 @@ struct ContentView: View {
         generationTrace = fields.dropFirst().joined(separator: " · ")
     }
 
-    private func generateOptimizedSerialSong() {
+    private func generateOptimizedSerialSong(cpuVAE: Bool = false) {
         guard !isGenerating && !isDiagnosingVAE else { return }
         isGenerating = true
-        generationMessage = "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
+        generationMessage = cpuVAE
+            ? "正在生成 CPU Low VAE 对照歌曲，请保持 App 在前台…"
+            : "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.generateOptimizedSerialSong(atDirectory: directory)
+            let result = cpuVAE
+                ? AceBridge.generateCpuVaeSerialSong(atDirectory: directory)
+                : AceBridge.generateOptimizedSerialSong(atDirectory: directory)
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
@@ -369,7 +434,9 @@ struct ContentView: View {
                 self.metricsStore.finishGeneration(audioSeconds: 30,
                     backend: result["backend"] as? String ?? "MNN Metal 请求 / CPU 回退可能")
                 do {
-                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path))
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path),
+                        description: cpuVAE ? "iPhone DiT Metal + VAE CPU Low · 固定条件"
+                                            : "iPhone DiT Metal + VAE Metal Low · 固定条件")
                     self.generationMessage += " 已载入播放器。"
                 } catch {
                     self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
@@ -404,7 +471,8 @@ struct ContentView: View {
                 self.metricsStore.finishGeneration(audioSeconds: 30,
                     backend: result["backend"] as? String ?? "本机歌词编码 → DiT → VAE")
                 do {
-                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path))
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path),
+                        description: "iPhone 新歌词 + DiT Metal + VAE Metal Low")
                     self.generationMessage += " 已载入播放器。"
                 } catch {
                     self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"

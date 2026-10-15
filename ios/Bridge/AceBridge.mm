@@ -164,8 +164,16 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runOptimizedFullSerialAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)generateCpuVaeSerialSongAtDirectory:(NSString *)directory {
+    return [EncoderBenchmark runOptimizedCpuVaeSerialAtDirectory:directory];
+}
+
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
     return [FixedSongEngine diagnoseVAEAtDirectory:directory];
+}
+
++ (NSDictionary<NSString *, id> *)diagnoseVAENoTuneAtDirectory:(NSString *)directory {
+    return [FixedSongEngine diagnoseVAENoTuneAtDirectory:directory];
 }
 
 + (NSDictionary<NSString *, id> *)generateCustomLyrics:(NSString *)lyrics atDirectory:(NSString *)directory {

@@ -123,23 +123,31 @@ bool readOutput(Graph &graph, float &peak) {
 
 @interface EncoderBenchmark ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory warmRuns:(size_t)warmRuns;
-+ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized;
++ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized
+                                                cpuVAE:(BOOL)cpuVAE;
 @end
 
 @implementation EncoderBenchmark
 
 + (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory {
-    return [self runFullSerialSongAtDirectory:directory optimized:NO];
+    return [self runFullSerialSongAtDirectory:directory optimized:NO cpuVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)runOptimizedFullSerialAtDirectory:(NSString *)directory {
-    return [self runFullSerialSongAtDirectory:directory optimized:YES];
+    return [self runFullSerialSongAtDirectory:directory optimized:YES cpuVAE:NO];
 }
 
-+ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized {
-    Trace trace(optimized ? "encoder-optimized-serial.log" : "encoder-full-serial.log",
-                optimized ? @"开始：Encoder 一次前向 → 释放 → 自适应内存门槛 → DiT 八步 → VAE 六段 → 30 秒 WAV；固定输入"
-                          : @"开始：Encoder 一次前向 → 释放 → DiT 八步 → VAE 十二段 → 30 秒 WAV；固定输入");
++ (NSDictionary<NSString *, id> *)runOptimizedCpuVaeSerialAtDirectory:(NSString *)directory {
+    return [self runFullSerialSongAtDirectory:directory optimized:YES cpuVAE:YES];
+}
+
++ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory optimized:(BOOL)optimized
+                                                cpuVAE:(BOOL)cpuVAE {
+    Trace trace(cpuVAE ? "encoder-cpu-vae-serial.log"
+                       : (optimized ? "encoder-optimized-serial.log" : "encoder-full-serial.log"),
+                cpuVAE ? @"开始：Encoder 一次前向 → 释放 → 自适应内存门槛 → DiT Metal 八步 → VAE CPU Low 六段 → 30 秒 WAV；固定条件"
+                       : (optimized ? @"开始：Encoder 一次前向 → 释放 → 自适应内存门槛 → DiT 八步 → VAE 六段 → 30 秒 WAV；固定输入"
+                                    : @"开始：Encoder 一次前向 → 释放 → DiT 八步 → VAE 十二段 → 30 秒 WAV；固定输入"));
     const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
     NSDictionary<NSString *, id> *encoder = [self runAtDirectory:directory warmRuns:0];
     trace.record(@"Encoder 测试函数已返回；立即采样内存");
@@ -171,11 +179,13 @@ bool readOutput(Graph &graph, float &peak) {
         return failure(@"Encoder 已完成，但内存余量不足；未启动 DiT。请分享完整串行日志。");
     }
     const double recoverySeconds = CFAbsoluteTimeGetCurrent() - recoveryStarted;
-    trace.record([NSString stringWithFormat:@"内存门槛通过；观察 %.3f 秒；开始 DiT 八步与 VAE %d 段（详见 last-inference.log）",
-                  recoverySeconds, optimized ? 6 : 12]);
-    NSDictionary<NSString *, id> *song = optimized
-        ? [FixedSongEngine generateOptimizedAtDirectory:directory]
-        : [FixedSongEngine generateAtDirectory:directory];
+    trace.record([NSString stringWithFormat:@"内存门槛通过；观察 %.3f 秒；开始 DiT 八步与 VAE %d 段（详见 %@）",
+                  recoverySeconds, optimized ? 6 : 12,
+                  cpuVAE ? @"last-inference-cpu-vae.log" : @"last-inference.log"]);
+    NSDictionary<NSString *, id> *song = cpuVAE
+        ? [FixedSongEngine generateOptimizedCpuVAEAtDirectory:directory]
+        : (optimized ? [FixedSongEngine generateOptimizedAtDirectory:directory]
+                     : [FixedSongEngine generateAtDirectory:directory]);
     trace.record([NSString stringWithFormat:@"DiT/VAE 已返回：%@；%@",
                   [song[@"success"] boolValue] ? @"成功" : @"失败", song[@"message"] ?: @"无消息"]);
     if (![song[@"success"] boolValue]) {
@@ -187,12 +197,15 @@ bool readOutput(Graph &graph, float &peak) {
         return failure(@"推理报告成功，但没有返回 WAV 路径。请分享完整串行日志。");
     }
     const double elapsed = CFAbsoluteTimeGetCurrent() - started;
-    trace.record([NSString stringWithFormat:@"%@串行完成；总耗时 %.3f 秒（内存回收观察 %.3f 秒）；30 秒音频 RTF %.3f；歌词条件仍为固定样例",
-                  optimized ? @"优化" : @"完整", elapsed, recoverySeconds, elapsed / 30.0]);
+    trace.record([NSString stringWithFormat:@"%@串行完成；总耗时 %.3f 秒（内存回收观察 %.3f 秒）；30 秒音频 RTF %.3f；VAE=%@；歌词条件仍为固定样例",
+                  optimized ? @"优化" : @"完整", elapsed, recoverySeconds, elapsed / 30.0,
+                  cpuVAE ? @"CPU Low" : @"Metal Low 请求"]);
     return @{ @"success": @YES, @"wavPath": wavPath,
               @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
-              @"backend": @"Encoder→DiT→VAE 串行 / Metal 请求、CPU 回退可能",
-              @"message": @"三组件串行推理已完成并保存 30 秒 WAV；Encoder 输出尚未接入 DiT，歌词仍为固定条件。请分享完整串行和推理日志。" };
+              @"backend": cpuVAE ? @"Encoder→DiT Metal→VAE CPU Low" : @"Encoder→DiT→VAE 串行 / Metal 请求、CPU 回退可能",
+              @"message": cpuVAE
+                  ? @"CPU Low VAE 对照已生成 30 秒 WAV；Encoder 输出仍未接入 DiT，歌词为固定条件。请分享 CPU 串行和推理日志并试听。"
+                  : @"三组件串行推理已完成并保存 30 秒 WAV；Encoder 输出尚未接入 DiT，歌词仍为固定条件。请分享完整串行和推理日志。" };
 }
 
 + (NSDictionary<NSString *, id> *)runSerialDiTAtDirectory:(NSString *)directory {

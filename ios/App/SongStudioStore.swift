@@ -90,14 +90,14 @@ final class SongStudioStore: ObservableObject {
         } catch { notify("导入音频失败：\(error.localizedDescription)") }
     }
 
-    func useGeneratedAudio(at url: URL) throws {
+    func useGeneratedAudio(at url: URL, description: String = "iPhone DiT + VAE 推理 · 固定预计算条件") throws {
         let candidate = try AVAudioPlayer(contentsOf: url)
         guard candidate.duration > 0 else { throw StudioError.invalidAudio }
         candidate.prepareToPlay()
         player?.stop()
         player = candidate
         audioName = url.lastPathComponent
-        audioDescription = "iPhone DiT + VAE 推理 · 固定预计算条件"
+        audioDescription = description
         currentTime = 0
         duration = candidate.duration
         isPlaying = false

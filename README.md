@@ -2,7 +2,7 @@
 
 这是一个按里程碑推进的实验工程，用于把 ACE-Step 1.5 Turbo 拆成 Text Encoder、DiT 和 VAE，导出 ONNX、转换 MNN，并集成到 iOS/Metal。
 
-> 当前状态：三个 W4 组件已在 iPhone 15 串行运行，并生成可播放的固定条件 30 秒 WAV；v17 真机总耗时 80.493 秒、RTF 2.683。v18 增加 VAE CPU/Metal 慢启动诊断。v19 新增端侧自定义歌词试验：需额外导入 311 MB 嵌入表和 254 MB 歌词编码器，当前仅接受恰好 73 token、固定风格的 30 秒歌曲；Windows 数值验证已过，iPhone 真机试听尚未验收。详见 `docs/ios-encoder-benchmark.md`。
+> 当前状态：三个 W4 组件已在 iPhone 15 串行运行，并生成可播放的固定条件 30 秒 WAV；v17 真机总耗时 80.493 秒、RTF 2.683。v19 已接通端侧自定义歌词试验（恰好 73 token、固定风格），真机生成成功但歌词听感尚待验收。v20 新增独立 VAE Metal NoTune 诊断与固定条件的 VAE CPU Low 整首对照；两项仍需真机测量与试听。详见 `docs/ios-vae-v20.md`。
 
 ## 已固定的首版目标
 
