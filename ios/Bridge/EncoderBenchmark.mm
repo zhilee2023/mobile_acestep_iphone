@@ -121,7 +121,52 @@ bool readOutput(Graph &graph, float &peak) {
 }
 } // namespace
 
+@interface EncoderBenchmark ()
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory warmRuns:(size_t)warmRuns;
+@end
+
 @implementation EncoderBenchmark
+
++ (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory {
+    Trace trace("encoder-full-serial.log",
+                @"开始：Encoder 一次前向 → 释放 → DiT 八步 → VAE 十二段 → 30 秒 WAV；固定输入");
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    NSDictionary<NSString *, id> *encoder = [self runAtDirectory:directory warmRuns:0];
+    trace.record(@"Encoder 测试函数已返回；立即采样内存");
+    if (![encoder[@"success"] boolValue]) {
+        trace.record([NSString stringWithFormat:@"停止：Encoder 失败；%@", encoder[@"message"] ?: @"未知原因"]);
+        return encoder;
+    }
+    usleep(1000000);
+    trace.record(@"Encoder 释放后 1 秒");
+    usleep(4000000);
+    trace.record(@"Encoder 释放后 5 秒");
+    const size_t available = trace.availableBytes();
+    if (available < kSerialDiTRequiredBytes) {
+        trace.record([NSString stringWithFormat:@"安全停止：DiT 需至少 %.0f MB 可用；当前 %.0f MB，未加载 DiT",
+                      kSerialDiTRequiredBytes / 1000000.0, available / 1000000.0]);
+        return failure(@"Encoder 已完成，但内存余量不足；未启动 DiT。请分享完整串行日志。");
+    }
+    trace.record(@"内存门槛通过；开始 DiT 八步与 VAE 十二段（详见 last-inference.log）");
+    NSDictionary<NSString *, id> *song = [FixedSongEngine generateAtDirectory:directory];
+    trace.record([NSString stringWithFormat:@"DiT/VAE 已返回：%@；%@",
+                  [song[@"success"] boolValue] ? @"成功" : @"失败", song[@"message"] ?: @"无消息"]);
+    if (![song[@"success"] boolValue]) {
+        return failure(@"Encoder 已完成，但 DiT/VAE 或 WAV 写入未通过。请分享完整串行及推理日志。");
+    }
+    NSString *wavPath = song[@"wavPath"];
+    if (![wavPath isKindOfClass:NSString.class] || wavPath.length == 0) {
+        trace.record(@"失败：推理报告成功，但没有返回 WAV 路径");
+        return failure(@"推理报告成功，但没有返回 WAV 路径。请分享完整串行日志。");
+    }
+    const double elapsed = CFAbsoluteTimeGetCurrent() - started;
+    trace.record([NSString stringWithFormat:@"完整串行完成；总耗时 %.3f 秒（含 5 秒内存回收观察）；30 秒音频 RTF %.3f；歌词条件仍为固定样例",
+                  elapsed, elapsed / 30.0]);
+    return @{ @"success": @YES, @"wavPath": wavPath,
+              @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
+              @"backend": @"Encoder→DiT→VAE 串行 / Metal 请求、CPU 回退可能",
+              @"message": @"三组件串行推理已完成并保存 30 秒 WAV；Encoder 输出尚未接入 DiT，歌词仍为固定条件。请分享完整串行和推理日志。" };
+}
 
 + (NSDictionary<NSString *, id> *)runSerialDiTAtDirectory:(NSString *)directory {
     Trace trace("encoder-dit-serial.log",
@@ -154,6 +199,10 @@ bool readOutput(Graph &graph, float &peak) {
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory warmRuns:kWarmRuns];
+}
+
++ (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory warmRuns:(size_t)warmRuns {
     @autoreleasepool {
         Trace trace;
         NSURL *idsURL = [NSBundle.mainBundle URLForResource:@"encoder-input-ids" withExtension:@"i64" subdirectory:@"Probe"];
@@ -197,7 +246,7 @@ bool readOutput(Graph &graph, float &peak) {
 
         double coldSeconds = 0.0;
         double warmTotal = 0.0;
-        for (size_t run = 0; run <= kWarmRuns; ++run) {
+        for (size_t run = 0; run <= warmRuns; ++run) {
             if (!trace.hasHeadroom()) {
                 trace.record(@"安全停止：可用内存不足 512 MiB");
                 return failure(@"Encoder 可用内存低于 512 MiB，已停止。请分享日志。");
@@ -220,9 +269,14 @@ bool readOutput(Graph &graph, float &peak) {
             if (run == 0) coldSeconds = seconds;
             else warmTotal += seconds;
         }
-        const double warmSeconds = warmTotal / kWarmRuns;
-        trace.record([NSString stringWithFormat:@"完成：首次 %.3f 秒；预热后平均 %.3f 秒；107 token 全序列吞吐 %.1f token/秒；采样峰值 %.0f MB；decode=不适用（无 KV cache）",
-                      coldSeconds, warmSeconds, kTokens / warmSeconds, trace.sampledPeak / 1000000.0]);
+        const double warmSeconds = warmRuns ? warmTotal / warmRuns : 0.0;
+        if (warmRuns) {
+            trace.record([NSString stringWithFormat:@"完成：首次 %.3f 秒；预热后平均 %.3f 秒；107 token 全序列吞吐 %.1f token/秒；采样峰值 %.0f MB；decode=不适用（无 KV cache）",
+                          coldSeconds, warmSeconds, kTokens / warmSeconds, trace.sampledPeak / 1000000.0]);
+        } else {
+            trace.record([NSString stringWithFormat:@"完成：一次全序列前向 %.3f 秒；采样峰值 %.0f MB；decode=不适用（无 KV cache）",
+                          coldSeconds, trace.sampledPeak / 1000000.0]);
+        }
         graph.interpreter->releaseSession(graph.session);
         graph.session = nullptr;
         MNN::Interpreter::destroy(graph.interpreter);

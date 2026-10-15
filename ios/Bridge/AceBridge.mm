@@ -152,5 +152,9 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runSerialDiTAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)generateFullSerialSongAtDirectory:(NSString *)directory {
+    return [EncoderBenchmark runFullSerialSongAtDirectory:directory];
+}
+
 @end
 

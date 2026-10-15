@@ -24,6 +24,9 @@ constexpr int kVaeOverlapFrames = 64;
 constexpr int kVaeWindowFrames = kVaeCoreFrames + 2 * kVaeOverlapFrames;
 constexpr int kVaeChunks = (kLatentFrames + kVaeCoreFrames - 1) / kVaeCoreFrames;
 constexpr size_t kMinimumAvailableBytes = 512ULL * 1024 * 1024;
+// The iPhone's 192-frame VAE raised footprint by ~1.2 GB after DiT release.
+// Leave a further ~0.5 GB margin before creating its session.
+constexpr size_t kVaeRequiredAvailableBytes = 1700000000ULL;
 constexpr std::array<float, 8> kTimesteps = {1.0f, 0.875f, 0.75f, 0.625f,
                                               0.5f, 0.375f, 0.25f, 0.125f};
 
@@ -359,6 +362,10 @@ NSURL *saveWAV(const std::vector<float> &audio, NSString **reason) {
                       @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started) };
         }
         trace.record(@"DiT 会话已释放；开始 VAE");
+        if (trace.availableBytes() < kVaeRequiredAvailableBytes) {
+            trace.record(@"安全停止：DiT 释放后可用内存不足 1700 MB，未创建 VAE 会话");
+            return failure(@"DiT 已完成，但剩余内存不足以安全创建 VAE。请分享诊断日志。");
+        }
 
         std::vector<float> audio(static_cast<size_t>(2) * kSamples);
         int written = 0;

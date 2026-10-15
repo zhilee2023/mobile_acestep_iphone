@@ -40,6 +40,11 @@ struct ContentView: View {
             .appendingPathComponent("Generated/encoder-dit-serial.log")
     }
 
+    private var fullSerialTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/encoder-full-serial.log")
+    }
+
     var body: some View {
         ZStack {
             StudioPalette.background.ignoresSafeArea()
@@ -379,12 +384,31 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || probe.elapsedSeconds == nil || isGenerating || isTestingDiT || isBenchmarkingEncoder)
+            Button { generateFullSerialSong() } label: {
+                HStack {
+                    if isGenerating { ProgressView().tint(StudioPalette.background) }
+                    Text(isGenerating ? "手机正在串行生成…" : "测 Encoder → DiT → VAE 整首串行")
+                    Spacer()
+                    Image(systemName: "waveform.badge.magnifyingglass")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isTestingDiT || isBenchmarkingEncoder)
+            Text("Encoder 只跑一次并释放；内存回落后执行固定条件的 DiT 八步、VAE 十二段，生成 30 秒 WAV。仍未接通编辑的歌词。")
+                .font(.caption2).foregroundStyle(.orange)
             Text(generationMessage).font(.caption).foregroundStyle(StudioPalette.secondary)
             Text("最近阶段：\(generationTrace)")
                 .font(.caption.monospacedDigit()).foregroundStyle(StudioPalette.secondary)
             if FileManager.default.fileExists(atPath: traceURL.path) {
                 ShareLink(item: traceURL) {
                     Label("分享诊断日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: fullSerialTraceURL.path) {
+                ShareLink(item: fullSerialTraceURL) {
+                    Label("分享完整串行日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
@@ -400,14 +424,26 @@ struct ContentView: View {
     }
 
     private func generateFixedSong() {
+        generateSong(fullSerial: false)
+    }
+
+    private func generateFullSerialSong() {
+        generateSong(fullSerial: true)
+    }
+
+    private func generateSong(fullSerial: Bool) {
         guard !isGenerating else { return }
         isGenerating = true
-        generationMessage = "正在手机上执行 MNN 推理，请保持 App 在前台…"
+        generationMessage = fullSerial
+            ? "正在串行执行 Encoder、DiT 和 VAE，请保持 App 在前台…"
+            : "正在手机上执行 MNN 推理，请保持 App 在前台…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.generateFixedSong(atDirectory: directory)
+            let result = fullSerial
+                ? AceBridge.generateFullSerialSong(atDirectory: directory)
+                : AceBridge.generateFixedSong(atDirectory: directory)
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
