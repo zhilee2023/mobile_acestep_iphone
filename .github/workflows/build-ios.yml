@@ -71,7 +71,7 @@ jobs:
               print(f"{key}: {info.get(key)!r}")
           assert info.get("UIFileSharingEnabled") is True
           assert info.get("LSSupportsOpeningDocumentsInPlace") is True
-          assert str(info.get("CFBundleVersion")) == "6"
+          assert str(info.get("CFBundleVersion")) == "7"
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-hidden.f32").is_file()
           PY
 

@@ -19,6 +19,10 @@ constexpr int kLatentChannels = 64;
 constexpr int kSampleRate = 48000;
 constexpr int kUpsample = 1920;
 constexpr int kSamples = kLatentFrames * kUpsample;
+constexpr int kVaeCoreFrames = 64;
+constexpr int kVaeOverlapFrames = 64;
+constexpr int kVaeWindowFrames = kVaeCoreFrames + 2 * kVaeOverlapFrames;
+constexpr int kVaeChunks = (kLatentFrames + kVaeCoreFrames - 1) / kVaeCoreFrames;
 constexpr size_t kMinimumAvailableBytes = 512ULL * 1024 * 1024;
 constexpr std::array<float, 8> kTimesteps = {1.0f, 0.875f, 0.75f, 0.625f,
                                               0.5f, 0.375f, 0.25f, 0.125f};
@@ -234,51 +238,58 @@ NSURL *saveWAV(const std::vector<float> &audio) {
 
         std::vector<float> audio(static_cast<size_t>(2) * kSamples);
         int written = 0;
-        for (int chunk = 0; chunk < 6; ++chunk) {
-            if (!trace.hasHeadroom()) {
-                trace.record(@"安全停止：剩余进程内存低于 512 MiB");
-                return failure(@"剩余进程内存低于 512 MiB，已停止以避免闪退。请分享诊断日志。");
-            }
-            trace.record([NSString stringWithFormat:@"VAE %d/6 开始", chunk + 1]);
-            const int coreStart = chunk * 128;
-            const int coreEnd = std::min(coreStart + 128, kLatentFrames);
-            const int winStart = std::max(0, coreStart - 64);
-            const int winEnd = std::min(kLatentFrames, coreEnd + 64);
-            const int frames = winEnd - winStart;
-            NSString *vaeName = [NSString stringWithFormat:@"vae_decoder_%d_w4.mnn", frames];
-            auto vae = openGraph([directory stringByAppendingPathComponent:vaeName]);
-            if (!vae) return failure([NSString stringWithFormat:@"无法加载 VAE %d 帧模型。", frames]);
-            trace.record([NSString stringWithFormat:@"VAE %d/6 会话已创建", chunk + 1]);
-            std::vector<float> latent(static_cast<size_t>(kLatentChannels) * frames);
-            for (int channel = 0; channel < kLatentChannels; ++channel) {
-                for (int frame = winStart; frame < winEnd; ++frame) {
-                    latent[channel * frames + frame - winStart] = hidden[frame * kLatentChannels + channel];
-                }
-            }
-            if (!setInput(*vae, "latents", latent.data(), latent.size())) {
-                return failure([NSString stringWithFormat:@"VAE %d 帧输入不匹配。", frames]);
-            }
-            MNN::ErrorCode code = vae->interpreter->runSession(vae->session);
+        {
+            // One fixed 192-frame graph is reused for all chunks. Keeping the
+            // 64-frame overlap avoids loading the larger 256-frame graph.
+            trace.record(@"开始创建唯一的 VAE 192 帧会话");
+            auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"]);
+            if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
+            trace.record(@"VAE 192 帧会话已创建");
+            std::vector<float> latent(static_cast<size_t>(kLatentChannels) * kVaeWindowFrames);
             std::vector<float> decoded;
-            if (code != MNN::NO_ERROR || !readOutput(*vae, "waveform", static_cast<size_t>(2) * frames * kUpsample, decoded)) {
-                trace.record([NSString stringWithFormat:@"VAE %d/6 失败", chunk + 1]);
-                return failure([NSString stringWithFormat:@"VAE 第 %d/6 段失败（MNN %d）。", chunk + 1, static_cast<int>(code)]);
+            for (int chunk = 0; chunk < kVaeChunks; ++chunk) {
+                if (!trace.hasHeadroom()) {
+                    trace.record(@"安全停止：剩余进程内存低于 512 MiB");
+                    return failure(@"剩余进程内存低于 512 MiB，已停止以避免闪退。请分享诊断日志。");
+                }
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 开始", chunk + 1, kVaeChunks]);
+                const int coreStart = chunk * kVaeCoreFrames;
+                const int coreEnd = std::min(coreStart + kVaeCoreFrames, kLatentFrames);
+                const int winStart = std::clamp(coreStart - kVaeOverlapFrames,
+                                                0, kLatentFrames - kVaeWindowFrames);
+                const int winEnd = winStart + kVaeWindowFrames;
+                for (int channel = 0; channel < kLatentChannels; ++channel) {
+                    for (int frame = winStart; frame < winEnd; ++frame) {
+                        latent[channel * kVaeWindowFrames + frame - winStart] =
+                            hidden[frame * kLatentChannels + channel];
+                    }
+                }
+                if (!setInput(*vae, "latents", latent.data(), latent.size())) {
+                    return failure(@"VAE 192 帧输入不匹配。");
+                }
+                MNN::ErrorCode code = vae->interpreter->runSession(vae->session);
+                if (code != MNN::NO_ERROR ||
+                    !readOutput(*vae, "waveform", static_cast<size_t>(2) * kVaeWindowFrames * kUpsample, decoded)) {
+                    trace.record([NSString stringWithFormat:@"VAE %d/%d 失败", chunk + 1, kVaeChunks]);
+                    return failure([NSString stringWithFormat:@"VAE 第 %d/%d 段失败（MNN %d）。",
+                                    chunk + 1, kVaeChunks, static_cast<int>(code)]);
+                }
+                const int coreSamples = (coreEnd - coreStart) * kUpsample;
+                const int offset = (coreStart - winStart) * kUpsample;
+                for (int channel = 0; channel < 2; ++channel) {
+                    const float *source = decoded.data() + channel * kVaeWindowFrames * kUpsample + offset;
+                    float *target = audio.data() + channel * kSamples + written;
+                    std::memcpy(target, source, static_cast<size_t>(coreSamples) * sizeof(float));
+                }
+                written += coreSamples;
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成", chunk + 1, kVaeChunks]);
             }
-            const int coreSamples = (coreEnd - coreStart) * kUpsample;
-            const int offset = (coreStart - winStart) * kUpsample;
-            for (int channel = 0; channel < 2; ++channel) {
-                const float *source = decoded.data() + channel * frames * kUpsample + offset;
-                float *target = audio.data() + channel * kSamples + written;
-                std::memcpy(target, source, static_cast<size_t>(coreSamples) * sizeof(float));
-            }
-            written += coreSamples;
-            trace.record([NSString stringWithFormat:@"VAE %d/6 完成", chunk + 1]);
         }
         if (written != kSamples) return failure(@"VAE 拼接后的音频长度不等于 30 秒。");
         NSURL *target = saveWAV(audio);
         if (!target) return failure(@"音频无效或写入 WAV 失败。");
         trace.record(@"WAV 已保存；生成完成");
-        return @{ @"success": @YES, @"message": @"iPhone 已完成 DiT 八步及 VAE 六段推理。歌词条件为预计算固定样例。",
+        return @{ @"success": @YES, @"message": @"iPhone 已完成 DiT 八步及 VAE 十二段推理。歌词条件为预计算固定样例。",
                   @"wavPath": target.path, @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started),
                   @"audioSeconds": @30.0, @"backend": @"MNN Metal 请求 / CPU 回退可能" };
     }

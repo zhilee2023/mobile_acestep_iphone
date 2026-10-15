@@ -91,15 +91,45 @@ def main() -> None:
         written += core.shape[-1]
         print(f"VAE {index + 1}/6: frames={frames}, samples={core.shape[-1]}", flush=True)
     assert written == 1_440_000, written
+    # v7 reuses one 192-frame graph, with 64 frames of context around each
+    # 64-frame core. Compare its waveform against the original tiled decoder.
+    del sessions
+    vae192, vae192_handle = session(MODELS / "vae_decoder_192_w4.mnn")
+    reused = np.zeros_like(output)
+    reused_written = 0
+    for index in range(math.ceil(750 / 64)):
+        core_start = index * 64
+        core_end = min(core_start + 64, 750)
+        win_start = min(max(core_start - 64, 0), 750 - 192)
+        win_end = win_start + 192
+        assert win_start <= core_start < core_end <= win_end
+        write_input(vae192, vae192_handle, "latents", latents[:, :, win_start:win_end].copy())
+        vae192.runSession(vae192_handle)
+        decoded = read_output(vae192, vae192_handle)[0, :, :, 0]
+        start = (core_start - win_start) * 1920
+        samples = (core_end - core_start) * 1920
+        reused[:, reused_written:reused_written + samples] = decoded[:, start:start + samples]
+        reused_written += samples
+        print(f"VAE reused {index + 1}/12: samples={samples}", flush=True)
+    assert reused_written == 1_440_000, reused_written
+    relative_l2 = float(np.linalg.norm(reused - output) / np.linalg.norm(output))
+    correlation = float(np.corrcoef(reused.reshape(-1), output.reshape(-1))[0, 1])
     peak = float(np.max(np.abs(output)))
     if peak > 1e-6:
         output *= np.float32(10 ** (-1.0 / 20.0) / peak)
     OUT.mkdir(parents=True, exist_ok=True)
     target = OUT / "fixed-vocal-mnn-cpu.wav"
     sf.write(target, output.T, 48_000, subtype="FLOAT")
+    reused_peak = float(np.max(np.abs(reused)))
+    if reused_peak > 1e-6:
+        reused *= np.float32(10 ** (-1.0 / 20.0) / reused_peak)
+    reused_target = OUT / "fixed-vocal-mnn-cpu-reused-192.wav"
+    sf.write(reused_target, reused.T, 48_000, subtype="FLOAT")
     report = {"first_step_relative_l2": first_step_error, "samples": written,
               "sample_rate": 48000, "duration_seconds": 30, "peak": float(np.max(np.abs(output))),
-              "wav": str(target)}
+              "wav": str(target), "reused_192_wav": str(reused_target),
+              "reused_192_relative_l2_vs_original_vae": relative_l2,
+              "reused_192_correlation_vs_original_vae": correlation}
     (OUT / "report.json").write_text(json.dumps(report, indent=2) + "\n")
     print(json.dumps(report, indent=2), flush=True)
 

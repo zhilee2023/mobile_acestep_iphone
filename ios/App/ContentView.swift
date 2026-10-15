@@ -249,7 +249,7 @@ struct ContentView: View {
     private var generationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
-            Text("固定条件样例：手机运行 8 步 DiT 与 6 段 VAE，输出 30 秒 WAV。文本条件来自预计算样例；上方编辑的歌词暂不会参与生成。")
+            Text("固定条件样例：手机运行 8 步 DiT 与 12 段 VAE，输出 30 秒 WAV。VAE 只建立一次会话；上方编辑的歌词暂不会参与生成。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
             Button { generateFixedSong() } label: {
                 HStack {
