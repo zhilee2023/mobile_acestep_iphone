@@ -1,0 +1,27 @@
+[
+  {
+    "id": "pop",
+    "title": "中文流行",
+    "caption": "Chinese Mandarin pop vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, piano, soft synth bass and pop drums, studio production."
+  },
+  {
+    "id": "rock",
+    "title": "流行摇滚",
+    "caption": "Chinese Mandarin rock vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, electric guitar, electric bass and rock drums, studio production."
+  },
+  {
+    "id": "ballad",
+    "title": "抒情钢琴",
+    "caption": "Chinese Mandarin ballad vocal song. Clear female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, gentle melody, acoustic piano, soft synth bass and soft drums, studio production."
+  },
+  {
+    "id": "dance",
+    "title": "电子舞曲",
+    "caption": "Chinese Mandarin dance vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, upbeat dance melody, synth lead, synth bass and dance drums, studio production."
+  },
+  {
+    "id": "soul",
+    "title": "灵魂律动",
+    "caption": "Chinese Mandarin soul vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, smooth melody, electric piano, soft synth bass and groove drums, studio production."
+  }
+]

@@ -3,7 +3,22 @@ import Foundation
 
 @MainActor
 final class SongStudioStore: ObservableObject {
+    struct StylePreset: Decodable, Identifiable {
+        let id: String
+        let title: String
+        let caption: String
+    }
+
     static let sampleCaption = "Chinese Mandarin pop vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, piano, soft synth bass and pop drums, studio production."
+    static let stylePresets: [StylePreset] = {
+        guard let url = Bundle.main.url(forResource: "style-presets", withExtension: "json", subdirectory: "Tokenizer"),
+              let data = try? Data(contentsOf: url),
+              let presets = try? JSONDecoder().decode([StylePreset].self, from: data),
+              !presets.isEmpty else {
+            return [StylePreset(id: "pop", title: "中文流行", caption: sampleCaption)]
+        }
+        return presets
+    }()
     static let sampleLyrics = """
     [Chorus]
     你听见吗我在唱给你

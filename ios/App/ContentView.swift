@@ -24,8 +24,12 @@ struct ContentView: View {
     @State private var activeVaeTraceURL: URL?
     @State private var generationMessage = "模型文件齐全后即可生成固定样例。"
     @State private var generationTrace = "尚无诊断记录"
-    @State private var usesExactSampleCaption = false
+    @State private var selectedStylePresetID: String?
     @FocusState private var captionIsFocused: Bool
+
+    private var selectedStylePreset: SongStudioStore.StylePreset? {
+        SongStudioStore.stylePresets.first { $0.id == selectedStylePresetID }
+    }
 
     private var traceURL: URL {
         FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -152,18 +156,32 @@ struct ContentView: View {
                 tag("女声样例")
             }
             Text("风格提示词").font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.secondary)
-            if usesExactSampleCaption {
-                Text(SongStudioStore.sampleCaption)
+            Text("风格预设（均为 107 token）")
+                .font(.caption2).foregroundStyle(StudioPalette.secondary)
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    ForEach(SongStudioStore.stylePresets) { preset in
+                        Button(preset.title) {
+                            captionIsFocused = false
+                            selectedStylePresetID = preset.id
+                        }
+                        .buttonStyle(.bordered)
+                        .tint(selectedStylePresetID == preset.id ? StudioPalette.mint : StudioPalette.violet)
+                    }
+                }
+            }
+            if let preset = selectedStylePreset {
+                Text(preset.caption)
                     .font(.caption)
                     .foregroundStyle(.white)
                     .padding(13)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-                Text("当前模式：内置示例（107 token）；生成时直接使用上方只读文本。")
+                Text("当前模式：\(preset.title)预设（107 token）；生成时直接使用上方只读文本。")
                     .font(.caption2).foregroundStyle(StudioPalette.mint)
-                Button("改为自定义风格") {
-                    studio.restoreSampleCaption()
-                    usesExactSampleCaption = false
+                Button("编辑此风格") {
+                    studio.caption = preset.caption
+                    selectedStylePresetID = nil
                 }
                     .font(.subheadline.weight(.medium))
                     .foregroundStyle(StudioPalette.violet)
@@ -175,14 +193,8 @@ struct ContentView: View {
                     .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
                 Text("当前模式：自定义风格；需恰好 107 token。")
                     .font(.caption2).foregroundStyle(StudioPalette.secondary)
-                Button("使用内置示例风格（107 token）") {
-                    captionIsFocused = false
-                    usesExactSampleCaption = true
-                }
-                    .font(.subheadline.weight(.medium))
-                    .foregroundStyle(StudioPalette.mint)
             }
-            Text("完整生成会在手机上编码此风格；当前静态模型只接受恰好 107 个风格 token。")
+            Text("预设可直接选择；自定义文字当前仍须恰好 107 token，不能靠增加字数延长歌曲。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
         .studioCard()
@@ -553,8 +565,9 @@ struct ContentView: View {
         guard !isGenerating && !isDiagnosingVAE else { return }
         captionIsFocused = false
         let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-        let useBundledCaption = forceBundledCaption || usesExactSampleCaption
-        let caption = (useBundledCaption ? SongStudioStore.sampleCaption : studio.caption)
+        let selectedPreset = selectedStylePreset
+        let useBundledCaption = forceBundledCaption
+        let caption = (forceBundledCaption ? SongStudioStore.sampleCaption : (selectedPreset?.caption ?? studio.caption))
             .trimmingCharacters(in: .whitespacesAndNewlines)
         guard !lyrics.isEmpty else {
             generationMessage = "请先输入歌词。"
@@ -565,9 +578,8 @@ struct ContentView: View {
             return
         }
         isGenerating = true
-        generationMessage = useBundledCaption
-            ? "v26 内置风格直通；正在编码当前歌词并运行 Qwen、DiT 与 CPU VAE…"
-            : "v26 自定义风格；正在编码风格与歌词并运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
+        let styleName = useBundledCaption ? "内置风格直通" : (selectedPreset?.title ?? "自定义风格")
+        generationMessage = "v27 \(styleName)；正在编码当前歌词并运行 Qwen、DiT 与 CPU VAE…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
@@ -576,8 +588,7 @@ struct ContentView: View {
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
-                let mode = useBundledCaption ? "内置风格直通" : "自定义风格"
-                self.generationMessage = "v26 \(mode)：" + (result["message"] as? String ?? "歌词生成未返回结果。")
+                self.generationMessage = "v27 \(styleName)：" + (result["message"] as? String ?? "歌词生成未返回结果。")
                 guard (result["success"] as? NSNumber)?.boolValue == true,
                       let path = result["wavPath"] as? String else {
                     self.metricsStore.cancelGeneration()

@@ -107,11 +107,12 @@ def test_lyric_tokenizer_bundle_and_probe() -> None:
     assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
 
 
-def test_v26_connected_condition_and_vae_modes() -> None:
+def test_v27_connected_condition_vae_and_style_presets() -> None:
+    import json
     import plistlib
 
     info = plistlib.loads((ROOT / "ios" / "Info.plist").read_bytes())
-    assert info["CFBundleVersion"] == "26"
+    assert info["CFBundleVersion"] == "27"
     engine = (ROOT / "ios" / "Bridge" / "FixedSongEngine.mm").read_text(encoding="utf-8")
     benchmark = (ROOT / "ios" / "Bridge" / "EncoderBenchmark.mm").read_text(encoding="utf-8")
     ui = (ROOT / "ios" / "App" / "ContentView.swift").read_text(encoding="utf-8")
@@ -134,9 +135,11 @@ def test_v26_connected_condition_and_vae_modes() -> None:
     assert 'if (!lyric) [ids addObject:@(kNewline)]' in lyric
     assert 'constexpr int kNewline = 198;' in lyric
     assert '内置样例 %lu token，当前输入 %lu token' in lyric
-    assert '使用内置示例风格（107 token）' in ui
-    assert 'forceBundledCaption || usesExactSampleCaption' in ui
+    presets = json.loads((ROOT / "ios/Tokenizer/style-presets.json").read_text(encoding="utf-8"))
+    assert {item["id"] for item in presets} == {"pop", "rock", "ballad", "dance", "soul"}
+    assert all(item["caption"] for item in presets)
+    assert 'ForEach(SongStudioStore.stylePresets)' in ui
+    assert 'selectedPreset?.caption' in ui
     assert '直接用内置风格＋当前歌词生成（107 token）' in ui
-    assert '当前模式：内置示例（107 token）' in ui
-    assert 'Text(SongStudioStore.sampleCaption)' in ui
+    assert '风格预设（均为 107 token）' in ui
 
