@@ -1,5 +1,7 @@
 # iPhone v21：自定义风格、歌词与 30 秒歌曲
 
+v22 补丁：修正风格提示词尾部的 Qwen 换行 token，使预置风格重新与捕获的 107-token 参考完全一致；增加“恢复示例风格（107 token）”按钮。v21 的自定义风格路径会错误计数或无法通过分词自检，请使用 v22 IPA。
+
 v21 新增真正连接的端侧条件链：用户风格描述经 Qwen 分词、Qwen3-Embedding-0.6B MNN W4、ACE-Step `text_projector`（1024→2048），放入 DiT 条件的最后 107 个位置。用户歌词经同一分词器的词嵌入表、ACE-Step 八层歌词编码器 MNN W4，放入前 73 个位置。中间 1 个 timbre token 仍是无参考音频的固定默认条件。随后 DiT Metal High 八步输出 750×64 latent，VAE CPU Low 六段解码为 30 秒 WAV。Qwen、歌词编码器、DiT 和 VAE 串行创建与释放，前两次阶段切换须连续通过 2400 MB 可用内存门槛；NoTune 整首对照也须通过此门槛。
 
 静态图限制没有消失：风格必须恰好 107 token，歌词必须恰好 73 token。App 对不符长度显示错误，不截断、不补齐。VAE、DiT 仍是固定 30 秒，初始 latent 与无参考音频 timbre 使用原固定样例。当前不支持任意长度、实时 DiT 流式、参考音频 timbre 定制。

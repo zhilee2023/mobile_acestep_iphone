@@ -3,6 +3,7 @@ import Foundation
 
 @MainActor
 final class SongStudioStore: ObservableObject {
+    static let sampleCaption = "Chinese Mandarin pop vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, piano, soft synth bass and pop drums, studio production."
     static let sampleLyrics = """
     [Chorus]
     你听见吗我在唱给你
@@ -34,11 +35,12 @@ final class SongStudioStore: ObservableObject {
     private var player: AVAudioPlayer?
 
     init() {
-        caption = UserDefaults.standard.string(forKey: "song.caption") ?? "Chinese Mandarin pop vocal song. Clear solo female singer begins singing the chorus immediately at the first beat, no instrumental intro, no extended instrumental passages. Upfront intelligible Mandarin lead vocal throughout, bright catchy melody, piano, soft synth bass and pop drums, studio production."
+        caption = UserDefaults.standard.string(forKey: "song.caption") ?? Self.sampleCaption
         lyrics = UserDefaults.standard.string(forKey: "song.lyrics") ?? Self.sampleLyrics
     }
 
     func restoreSample() { lyrics = Self.sampleLyrics }
+    func restoreSampleCaption() { caption = Self.sampleCaption }
 
     func importLyrics(_ result: Result<[URL], Error>) {
         do {

@@ -2,7 +2,7 @@
 
 这是一个按里程碑推进的实验工程，用于把 ACE-Step 1.5 Turbo 拆成 Text Encoder、DiT 和 VAE，导出 ONNX、转换 MNN，并集成到 iOS/Metal。
 
-> 当前状态：iPhone 15 已完成固定条件的 Qwen 测速、DiT 八步和 VAE CPU Low 六段；固定条件串行 30 秒 WAV 总耗时 48.449 秒、RTF 1.615。v21 新增自定义风格与歌词真正接入 DiT、CPU Low VAE 的完整生成入口，以及 Metal NoTune 整首对照；v21 两条新路径仍需真机内存、速度与听感验收。详见 `docs/ios-connected-v21.md`。
+> 当前状态：iPhone 15 已完成固定条件的 Qwen 测速、DiT 八步和 VAE CPU Low 六段；固定条件串行 30 秒 WAV 总耗时 48.449 秒、RTF 1.615。v22 修复自定义风格的分词结尾，并提供恢复 107-token 示例风格；自定义风格＋歌词完整生成仍需真机内存、速度与听感验收。Metal NoTune 整首曾因保守内存门槛停止，未生成 WAV。详见 `docs/ios-connected-v21.md`。
 
 ## 已固定的首版目标
 

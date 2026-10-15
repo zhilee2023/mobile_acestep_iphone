@@ -15,6 +15,7 @@ constexpr int kConditionWidth = 2048;
 constexpr int kConditionTokens = 181;
 constexpr int kVocabSize = 151669;
 constexpr int kEndOfText = 151643;
+constexpr int kNewline = 198;
 constexpr size_t kEmbeddingBytes = static_cast<size_t>(kVocabSize) * kEmbeddingWidth * 2;
 
 NSDictionary<NSString *, id> *failure(NSString *message, NSInteger tokenCount = 0) {
@@ -48,7 +49,7 @@ NSArray<NSString *> *byteSymbols() {
 }
 
 NSArray<NSNumber *> *tokenize(NSString *content, BOOL lyric, NSString **error) {
-    if (content.length == 0 || [content containsString:@"<|"]) {
+    if (content.length == 0 || content.length > 2048 || [content containsString:@"<|"]) {
         if (error) *error = @"输入为空或包含模型保留标记 <|，请修改后重试。";
         return nil;
     }
@@ -115,13 +116,16 @@ NSArray<NSNumber *> *tokenize(NSString *content, BOOL lyric, NSString **error) {
             }
             [ids addObject:identifier];
         }
-        if (ids.count > (lyric ? kLyricTokens : 107)) break;
+        if (lyric && ids.count > kLyricTokens) break;
     }
-    if (covered != normalized.length && ids.count <= (lyric ? kLyricTokens : 107)) {
+    if (covered != normalized.length && (!lyric || ids.count <= kLyricTokens)) {
         if (error) *error = @"歌词未能完整分词。";
         return nil;
     }
     [ids addObject:@(kEndOfText)];
+    // Qwen's style prompt includes "<|endoftext|>\n", then its post-processor
+    // appends a second end-of-text token. Lyrics omit that intervening newline.
+    if (!lyric) [ids addObject:@(kNewline)];
     [ids addObject:@(kEndOfText)];
     return ids;
 }

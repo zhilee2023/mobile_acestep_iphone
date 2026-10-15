@@ -154,6 +154,9 @@ struct ContentView: View {
                 .lineLimit(2...4)
                 .padding(13)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
+            Button("恢复示例风格（107 token）") { studio.restoreSampleCaption() }
+                .font(.subheadline.weight(.medium))
+                .foregroundStyle(StudioPalette.mint)
             Text("完整生成会在手机上编码此风格；当前静态模型只接受恰好 107 个风格 token。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
