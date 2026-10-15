@@ -55,6 +55,21 @@ struct ContentView: View {
             .appendingPathComponent("Generated/last-inference-cpu-vae.log")
     }
 
+    private var customInferenceTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/last-inference-custom-cpu-vae.log")
+    }
+
+    private var styleEncoderTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/style-encoder.log")
+    }
+
+    private var noTuneSongTraceURL: URL {
+        FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("Generated/last-inference-notune-vae.log")
+    }
+
     var body: some View {
         ZStack {
             StudioPalette.background.ignoresSafeArea()
@@ -65,7 +80,6 @@ struct ContentView: View {
                     lyricsCard
                     modelCard
                     generationCard
-                    vaeDiagnosticCard
                     playerCard
                     metricsCard
                     Text("ACE-Step 1.5 · MNN W4 · iPhone 实验版")
@@ -140,7 +154,7 @@ struct ContentView: View {
                 .lineLimit(2...4)
                 .padding(13)
                 .background(Color.white.opacity(0.06), in: RoundedRectangle(cornerRadius: 12))
-            Text("当前风格条件仍固定；修改提示词不会改变端侧输出。")
+            Text("完整生成会在手机上编码此风格；当前静态模型只接受恰好 107 个风格 token。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
         }
         .studioCard()
@@ -251,22 +265,11 @@ struct ContentView: View {
     private var generationCard: some View {
         VStack(alignment: .leading, spacing: 14) {
             heading("iPhone 生成", icon: "sparkles.rectangle.stack.fill")
-            Text("固定样例：手机依次运行 Encoder 测试、DiT 八步和 VAE 六段，输出 30 秒 WAV。Encoder 输出尚未接入 DiT。")
+            Text("完整生成使用当前风格和歌词；固定条件入口只用于对比速度与声音。")
                 .font(.subheadline).foregroundStyle(StudioPalette.secondary)
-            Button { generateOptimizedSerialSong() } label: {
-                HStack {
-                    if isGenerating { ProgressView().tint(StudioPalette.background) }
-                    Text(isGenerating ? "手机正在生成…" : "生成 30 秒样例")
-                    Spacer()
-                    Image(systemName: "waveform")
-                }
-                .frame(maxWidth: .infinity)
-            }
-            .buttonStyle(StudioButtonStyle())
-            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
             Button { generateOptimizedSerialSong(cpuVAE: true) } label: {
                 HStack {
-                    Text("生成 CPU Low VAE 对照歌曲")
+                    Text("固定样例 · CPU VAE 基线")
                     Spacer()
                     Image(systemName: "cpu")
                 }
@@ -274,14 +277,24 @@ struct ContentView: View {
             }
             .buttonStyle(StudioButtonStyle())
             .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
-            Text("CPU 对照只切换 VAE 后端；仍使用相同固定歌词、DiT 八步和六段拼接。请比较两首 WAV 的时间及听感。")
+            Button { generateNoTuneSong() } label: {
+                HStack {
+                    Text("生成 Metal NoTune 整首对照（实验）")
+                    Spacer()
+                    Image(systemName: "bolt")
+                }
+                .frame(maxWidth: .infinity)
+            }
+            .buttonStyle(StudioButtonStyle())
+            .disabled(!modelStore.allModelsPresent || isGenerating || isDiagnosingVAE)
+            Text("NoTune 整首仍待真机验证，可能因内存不足提前停止；固定基线和 NoTune 均不使用当前编辑的歌词或风格。")
                 .font(.caption2).foregroundStyle(StudioPalette.secondary)
-            Text("上方按钮仍是固定歌词对照。新歌词请用下方试验按钮；风格条件暂不变。")
+            Text("上方按钮是固定条件对照。下方完整生成会使用当前歌词和风格，串行运行 Qwen、歌词编码器、DiT 与 CPU VAE。")
                 .font(.caption2).foregroundStyle(.orange)
-            Button { generateCustomLyricsSong() } label: {
+            Button { generateCustomSong() } label: {
                 HStack {
                     if isGenerating { ProgressView().tint(StudioPalette.background) }
-                    Text("用当前歌词生成（73-token 试验）")
+                    Text("用当前歌词＋风格生成（试验）")
                     Spacer()
                     Image(systemName: "text.quote")
                 }
@@ -313,6 +326,24 @@ struct ContentView: View {
             if FileManager.default.fileExists(atPath: cpuVaeInferenceTraceURL.path) {
                 ShareLink(item: cpuVaeInferenceTraceURL) {
                     Label("分享 CPU VAE 推理日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: styleEncoderTraceURL.path) {
+                ShareLink(item: styleEncoderTraceURL) {
+                    Label("分享风格编码日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: customInferenceTraceURL.path) {
+                ShareLink(item: customInferenceTraceURL) {
+                    Label("分享完整生成日志", systemImage: "square.and.arrow.up")
+                }
+                .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
+            }
+            if FileManager.default.fileExists(atPath: noTuneSongTraceURL.path) {
+                ShareLink(item: noTuneSongTraceURL) {
+                    Label("分享 NoTune 整首日志", systemImage: "square.and.arrow.up")
                 }
                 .font(.caption.weight(.semibold)).foregroundStyle(StudioPalette.mint)
             }
@@ -394,7 +425,8 @@ struct ContentView: View {
     }
 
     private func refreshGenerationTrace() {
-        let candidates = [optimizedSerialTraceURL, cpuVaeSerialTraceURL,
+        let candidates = [customInferenceTraceURL, styleEncoderTraceURL, noTuneSongTraceURL,
+                          optimizedSerialTraceURL, cpuVaeSerialTraceURL,
                           cpuVaeInferenceTraceURL, traceURL]
         let latest = candidates.filter { FileManager.default.fileExists(atPath: $0.path) }
             .max { left, right in
@@ -445,20 +477,56 @@ struct ContentView: View {
         }
     }
 
-    private func generateCustomLyricsSong() {
+    private func generateNoTuneSong() {
         guard !isGenerating && !isDiagnosingVAE else { return }
-        let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !lyrics.isEmpty else {
-            generationMessage = "请先输入歌词。"
-            return
-        }
         isGenerating = true
-        generationMessage = "正在本机编码当前歌词，再运行 DiT 与 VAE；仅接受 73-token 歌词…"
+        generationMessage = "正在用固定条件测试 Metal NoTune 整首生成，请保持 App 在前台…"
         generationTrace = "正在启动…"
         metricsStore.beginGeneration()
         let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
         DispatchQueue.global(qos: .userInitiated).async {
-            let result = AceBridge.generateCustomLyrics(lyrics, atDirectory: directory)
+            let result = AceBridge.generateNoTuneVAESong(atDirectory: directory)
+            DispatchQueue.main.async {
+                self.isGenerating = false
+                self.refreshGenerationTrace()
+                self.generationMessage = result["message"] as? String ?? "NoTune 生成未返回结果。"
+                guard (result["success"] as? NSNumber)?.boolValue == true,
+                      let path = result["wavPath"] as? String else {
+                    self.metricsStore.cancelGeneration()
+                    return
+                }
+                self.metricsStore.finishGeneration(audioSeconds: 30,
+                    backend: result["backend"] as? String ?? "DiT Metal + VAE Metal NoTune")
+                do {
+                    try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path),
+                        description: "iPhone 固定条件 + VAE Metal NoTune · 实验对照")
+                    self.generationMessage += " 已载入播放器。"
+                } catch {
+                    self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func generateCustomSong() {
+        guard !isGenerating && !isDiagnosingVAE else { return }
+        let lyrics = studio.lyrics.trimmingCharacters(in: .whitespacesAndNewlines)
+        let caption = studio.caption.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !lyrics.isEmpty else {
+            generationMessage = "请先输入歌词。"
+            return
+        }
+        guard !caption.isEmpty else {
+            generationMessage = "请先输入风格提示词。"
+            return
+        }
+        isGenerating = true
+        generationMessage = "正在本机编码风格与歌词，再运行 DiT 与 CPU VAE；需 107 个风格 token、73 个歌词 token…"
+        generationTrace = "正在启动…"
+        metricsStore.beginGeneration()
+        let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0].path
+        DispatchQueue.global(qos: .userInitiated).async {
+            let result = AceBridge.generateCustomSong(withLyrics: lyrics, caption: caption, atDirectory: directory)
             DispatchQueue.main.async {
                 self.isGenerating = false
                 self.refreshGenerationTrace()
@@ -469,10 +537,10 @@ struct ContentView: View {
                     return
                 }
                 self.metricsStore.finishGeneration(audioSeconds: 30,
-                    backend: result["backend"] as? String ?? "本机歌词编码 → DiT → VAE")
+                    backend: result["backend"] as? String ?? "本机风格和歌词编码 → DiT → CPU VAE")
                 do {
                     try self.studio.useGeneratedAudio(at: URL(fileURLWithPath: path),
-                        description: "iPhone 新歌词 + DiT Metal + VAE Metal Low")
+                        description: "iPhone 新风格 + 新歌词 + DiT Metal + VAE CPU Low")
                     self.generationMessage += " 已载入播放器。"
                 } catch {
                     self.generationMessage += " WAV 已保存，但播放器载入失败：\(error.localizedDescription)"

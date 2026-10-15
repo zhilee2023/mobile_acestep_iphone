@@ -47,9 +47,9 @@ NSArray<NSString *> *byteSymbols() {
     return symbols;
 }
 
-NSArray<NSNumber *> *tokenize(NSString *lyrics, NSString **error) {
-    if (lyrics.length == 0 || [lyrics containsString:@"<|"]) {
-        if (error) *error = @"歌词为空或包含模型保留标记 <|，请修改后重试。";
+NSArray<NSNumber *> *tokenize(NSString *content, BOOL lyric, NSString **error) {
+    if (content.length == 0 || [content containsString:@"<|"]) {
+        if (error) *error = @"输入为空或包含模型保留标记 <|，请修改后重试。";
         return nil;
     }
     NSURL *url = [NSBundle.mainBundle URLForResource:@"tokenizer" withExtension:@"json" subdirectory:@"Tokenizer"];
@@ -75,8 +75,9 @@ NSArray<NSNumber *> *tokenize(NSString *lyrics, NSString **error) {
         if (pair.count == 2) ranks[pairKey(pair[0], pair[1])] = @(rank);
     }
     NSArray<NSString *> *symbols = byteSymbols();
-    NSString *normalized = [[NSString stringWithFormat:@"# Languages\nzh\n\n# Lyric\n%@", lyrics]
-                            precomposedStringWithCanonicalMapping];
+    NSString *raw = lyric ? [NSString stringWithFormat:@"# Languages\nzh\n\n# Lyric\n%@", content]
+                          : [NSString stringWithFormat:@"# Instruction\nFill the audio semantic mask based on the given conditions:\n\n# Caption\n%@\n\n# Metas\n- bpm: N/A\n- timesignature: N/A\n- keyscale: N/A\n- duration: 30 seconds\n", content];
+    NSString *normalized = [raw precomposedStringWithCanonicalMapping];
     NSArray<NSTextCheckingResult *> *matches = [regex matchesInString:normalized options:0
                                                                 range:NSMakeRange(0, normalized.length)];
     NSMutableArray<NSNumber *> *ids = [NSMutableArray array];
@@ -114,9 +115,9 @@ NSArray<NSNumber *> *tokenize(NSString *lyrics, NSString **error) {
             }
             [ids addObject:identifier];
         }
-        if (ids.count > kLyricTokens) break;
+        if (ids.count > (lyric ? kLyricTokens : 107)) break;
     }
-    if (covered != normalized.length && ids.count <= kLyricTokens) {
+    if (covered != normalized.length && ids.count <= (lyric ? kLyricTokens : 107)) {
         if (error) *error = @"歌词未能完整分词。";
         return nil;
     }
@@ -140,7 +141,7 @@ bool readProbe(NSString *name, NSString *extension, size_t bytes, std::vector<ui
 + (NSDictionary<NSString *, id> *)encodeLyrics:(NSString *)lyrics atDirectory:(NSString *)directory {
     @autoreleasepool {
         NSString *tokenError = nil;
-        NSArray<NSNumber *> *ids = tokenize(lyrics, &tokenError);
+        NSArray<NSNumber *> *ids = tokenize(lyrics, YES, &tokenError);
         if (!ids) return failure(tokenError ?: @"歌词分词失败。");
         if (ids.count != kLyricTokens) {
             return failure([NSString stringWithFormat:@"当前试验版只支持恰好 %d 个 token；这段歌词为 %lu 个。请调整字数或标点后重试，不会截断。",
@@ -155,7 +156,7 @@ bool readProbe(NSString *name, NSString *extension, size_t bytes, std::vector<ui
         if (!sample) return failure(@"内置歌词样例缺失。", ids.count);
         // Run the exact upstream tokenizer contract before accepting any custom input.
         NSString *sampleError = nil;
-        NSArray<NSNumber *> *sampleTokens = tokenize([sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]], &sampleError);
+        NSArray<NSNumber *> *sampleTokens = tokenize([sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]], YES, &sampleError);
         if (!sampleTokens || sampleTokens.count != kLyricTokens) {
             return failure([NSString stringWithFormat:@"分词器自检失败：%@", sampleError ?: @"样例长度不一致"], ids.count);
         }
@@ -260,5 +261,34 @@ bool readProbe(NSString *name, NSString *extension, size_t bytes, std::vector<ui
                   @"condition": [NSData dataWithBytes:combined.data() length:combined.size()],
                   @"message": @"歌词条件编码完成。" };
     }
+}
+
++ (NSDictionary<NSString *, id> *)tokenizeCaption:(NSString *)caption {
+    NSString *tokenError = nil;
+    NSArray<NSNumber *> *ids = tokenize(caption, NO, &tokenError);
+    if (!ids) return failure(tokenError ?: @"风格提示词分词失败。");
+    if (ids.count != 107) {
+        return failure([NSString stringWithFormat:@"当前静态 Qwen 图只支持恰好 107 个风格 token；现在为 %lu 个。请调整描述，不会截断或补齐。",
+                        static_cast<unsigned long>(ids.count)], ids.count);
+    }
+    NSURL *sampleURL = [NSBundle.mainBundle URLForResource:@"sample-caption" withExtension:@"txt" subdirectory:@"Tokenizer"];
+    NSString *sample = sampleURL ? [NSString stringWithContentsOfURL:sampleURL encoding:NSUTF8StringEncoding error:nil] : nil;
+    std::vector<uint8_t> reference;
+    if (!sample || !readProbe(@"encoder-input-ids", @"i64", 107 * sizeof(int64_t), reference)) {
+        return failure(@"风格分词自检文件缺失。");
+    }
+    NSString *sampleError = nil;
+    NSArray<NSNumber *> *sampleIDs = tokenize([sample stringByTrimmingCharactersInSet:[NSCharacterSet newlineCharacterSet]], NO, &sampleError);
+    if (!sampleIDs || sampleIDs.count != 107) return failure(@"风格分词自检长度不一致。");
+    const int64_t *expected = reinterpret_cast<const int64_t *>(reference.data());
+    for (int index = 0; index < 107; ++index) {
+        if (sampleIDs[index].longLongValue != expected[index]) {
+            return failure([NSString stringWithFormat:@"风格分词自检失败，第 %d 个 token 不一致。", index]);
+        }
+    }
+    NSMutableData *data = [NSMutableData dataWithLength:107 * sizeof(int64_t)];
+    int64_t *destination = static_cast<int64_t *>(data.mutableBytes);
+    for (int index = 0; index < 107; ++index) destination[index] = ids[index].longLongValue;
+    return @{ @"success": @YES, @"tokenCount": @(ids.count), @"ids": data };
 }
 @end

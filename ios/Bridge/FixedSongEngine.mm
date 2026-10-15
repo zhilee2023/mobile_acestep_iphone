@@ -106,7 +106,8 @@ TensorStats tensorStats(const std::vector<float> &values) {
 
 std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace,
                                  MNN::BackendConfig::PrecisionMode precision,
-                                 MNNForwardType backendType = MNN_FORWARD_METAL) {
+                                 MNNForwardType backendType = MNN_FORWARD_METAL,
+                                 bool noTune = false) {
     auto graph = std::make_unique<Graph>();
     const CFAbsoluteTime loadStarted = CFAbsoluteTimeGetCurrent();
     graph->interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
@@ -119,6 +120,7 @@ std::unique_ptr<Graph> openGraph(NSString *path, InferenceTrace &trace,
     MNN::ScheduleConfig config;
     config.type = backendType;
     if (backendType == MNN_FORWARD_CPU) config.numThread = 4;
+    if (backendType == MNN_FORWARD_METAL && noTune) config.mode = MNN_GPU_TUNING_NONE;
     config.backupType = MNN_FORWARD_CPU;
     config.backendConfig = &backend;
     const CFAbsoluteTime sessionStarted = CFAbsoluteTimeGetCurrent();
@@ -398,7 +400,7 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 @interface FixedSongEngine ()
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
                                    highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
-                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE;
+                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE noTuneVAE:(BOOL)noTuneVAE;
 @end
 
 @implementation FixedSongEngine
@@ -494,41 +496,55 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
 }
 
 + (NSDictionary<NSString *, id> *)generateAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO noTuneVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)generateOptimizedAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:NO noTuneVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)generateOptimizedCpuVAEAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:YES];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:YES noTuneVAE:NO];
+}
+
++ (NSDictionary<NSString *, id> *)generateOptimizedNoTuneVAEAtDirectory:(NSString *)directory {
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:nil cpuVAE:NO noTuneVAE:YES];
 }
 
 + (NSDictionary<NSString *, id> *)generateWithCondition:(NSData *)condition atDirectory:(NSString *)directory {
     if (condition.length != static_cast<size_t>(181) * 2048 * sizeof(float)) {
         return failure(@"自定义歌词条件形状不正确。");
     }
-    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition cpuVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition cpuVAE:NO noTuneVAE:NO];
+}
+
++ (NSDictionary<NSString *, id> *)generateWithConditionCpuVAE:(NSData *)condition atDirectory:(NSString *)directory {
+    if (condition.length != static_cast<size_t>(181) * 2048 * sizeof(float)) {
+        return failure(@"歌词／风格条件形状不正确。");
+    }
+    return [self runAtDirectory:directory twoStepProbe:NO highPrecision:YES optimizedVAE:YES condition:condition cpuVAE:YES noTuneVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepHighAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:YES optimizedVAE:NO condition:nil cpuVAE:NO noTuneVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)probeTwoStepLowAtDirectory:(NSString *)directory {
-    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO condition:nil cpuVAE:NO];
+    return [self runAtDirectory:directory twoStepProbe:YES highPrecision:NO optimizedVAE:NO condition:nil cpuVAE:NO noTuneVAE:NO];
 }
 
 + (NSDictionary<NSString *, id> *)runAtDirectory:(NSString *)directory twoStepProbe:(BOOL)twoStepProbe
                                    highPrecision:(BOOL)highPrecision optimizedVAE:(BOOL)optimizedVAE
-                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE {
+                                        condition:(NSData *)condition cpuVAE:(BOOL)cpuVAE noTuneVAE:(BOOL)noTuneVAE {
     @autoreleasepool {
         InferenceTrace trace(twoStepProbe, highPrecision, optimizedVAE,
-                             cpuVAE ? @"last-inference-cpu-vae.log" : nil,
-                             cpuVAE ? @"开始：30 秒固定样例；DiT Metal High → VAE CPU Low；VAE 六段"
-                                    : (condition ? @"开始：30 秒自定义歌词；固定风格；DiT Metal High → VAE Metal Low；VAE 六段"
-                                                 : nil));
+                             cpuVAE ? (condition ? @"last-inference-custom-cpu-vae.log" : @"last-inference-cpu-vae.log")
+                                    : (noTuneVAE ? @"last-inference-notune-vae.log" : nil),
+                             cpuVAE ? (condition ? @"开始：30 秒自定义歌词与风格；DiT Metal High → VAE CPU Low；VAE 六段"
+                                                 : @"开始：30 秒固定样例；DiT Metal High → VAE CPU Low；VAE 六段")
+                                    : (noTuneVAE ? @"开始：30 秒固定样例；DiT Metal High → VAE Metal Low NoTune；VAE 六段"
+                                                 : (condition ? @"开始：30 秒自定义歌词；固定风格；DiT Metal High → VAE Metal Low；VAE 六段"
+                                                 : nil)));
         const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
         const size_t latentCount = static_cast<size_t>(kLatentFrames) * kLatentChannels;
         std::vector<float> hidden, encoder, context;
@@ -542,7 +558,8 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
             encoder.resize(static_cast<size_t>(181) * 2048);
             std::memcpy(encoder.data(), condition.bytes, condition.length);
             if (!tensorStats(encoder).finite) return failure(@"自定义歌词条件包含非有限值。");
-            trace.record(@"自定义歌词条件已接入 DiT；风格与 timbre 仍为固定样例");
+            trace.record(cpuVAE ? @"自定义歌词和风格条件已接入 DiT；无参考音频，timbre 使用默认固定条件"
+                                : @"自定义歌词条件已接入 DiT；风格与 timbre 仍为固定样例");
         } else {
             trace.record(@"固定条件已加载");
         }
@@ -645,6 +662,18 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
                       @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started) };
         }
         trace.record(@"DiT 会话已释放；开始 VAE");
+        if (noTuneVAE) {
+            const CFAbsoluteTime waitStarted = CFAbsoluteTimeGetCurrent();
+            int consecutive = 0;
+            while (CFAbsoluteTimeGetCurrent() - waitStarted < 10.0) {
+                consecutive = trace.availableBytes() >= 2400000000ULL ? consecutive + 1 : 0;
+                if (consecutive >= 2) break;
+                usleep(250000);
+            }
+            trace.record([NSString stringWithFormat:@"NoTune VAE 内存等待 %.3f 秒；达标 %d/2",
+                          CFAbsoluteTimeGetCurrent() - waitStarted, consecutive]);
+            if (consecutive < 2) return failure(@"DiT 已完成，但 NoTune VAE 所需的 2400 MB 内存余量未恢复；已安全停止。");
+        }
         if (trace.availableBytes() < kVaeRequiredAvailableBytes) {
             trace.record(@"安全停止：DiT 释放后可用内存不足 1700 MB，未创建 VAE 会话");
             return failure(@"DiT 已完成，但剩余内存不足以安全创建 VAE。请分享诊断日志。");
@@ -659,10 +688,11 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
             // Reuse one 192-frame graph. The optimized 128-frame core keeps
             // 32 frames of context on each side, validated against 64/64.
             trace.record(cpuVAE ? @"开始创建唯一的 VAE 192 帧 CPU Low 会话"
-                                : @"开始创建唯一的 VAE 192 帧 Metal Low 会话");
+                                : (noTuneVAE ? @"开始创建唯一的 VAE 192 帧 Metal Low NoTune 会话"
+                                             : @"开始创建唯一的 VAE 192 帧 Metal Low 会话"));
             auto vae = openGraph([directory stringByAppendingPathComponent:@"vae_decoder_192_w4.mnn"], trace,
                                  MNN::BackendConfig::Precision_Low,
-                                 cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL);
+                                 cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL, noTuneVAE);
             if (!vae) return failure(@"无法加载 VAE 192 帧模型。");
             int actualBackends[2] = {-1, -1};
             if (vae->interpreter->getSessionInfo(vae->session, MNN::Interpreter::BACKENDS, actualBackends)) {
@@ -670,6 +700,9 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
                               actualBackends[0]]);
                 if (cpuVAE && actualBackends[0] != MNN_FORWARD_CPU && actualBackends[0] != 13) {
                     return failure(@"VAE CPU Low 对照未使用 CPU 后端，已停止。");
+                }
+                if (noTuneVAE && actualBackends[0] != MNN_FORWARD_METAL) {
+                    return failure(@"VAE NoTune 未使用 Metal 主 pipeline，已停止。");
                 }
             }
             trace.record(@"VAE 192 帧会话已创建");
@@ -730,14 +763,15 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
                     std::memcpy(target, source, static_cast<size_t>(coreSamples) * sizeof(float));
                 }
                 written += coreSamples;
-                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成；输出峰值 %.8g",
-                              chunk + 1, vaeChunks, corePeak]);
+                trace.record([NSString stringWithFormat:@"VAE %d/%d 完成；输出峰值 %.8g；已解码 %.2f 秒音频；从生成开始 %.3f 秒",
+                              chunk + 1, vaeChunks, corePeak, static_cast<double>(coreEnd) / 25.0,
+                              CFAbsoluteTimeGetCurrent() - started]);
             }
         }
         if (written != kSamples) return failure(@"VAE 拼接后的音频长度不等于 30 秒。");
         NSString *saveError = nil;
-        NSString *filenamePrefix = condition ? @"custom-lyrics-30s-w4-metal-vae"
-                                             : (cpuVAE ? @"fixed-30s-w4-cpu-vae" : @"fixed-30s-w4-metal-vae");
+        NSString *filenamePrefix = condition ? (cpuVAE ? @"custom-song-30s-w4-cpu-vae" : @"custom-lyrics-30s-w4-metal-vae")
+                                             : (cpuVAE ? @"fixed-30s-w4-cpu-vae" : (noTuneVAE ? @"fixed-30s-w4-metal-notune-vae" : @"fixed-30s-w4-metal-vae"));
         NSURL *target = saveWAV(audio, &saveError, filenamePrefix);
         if (!target) {
             NSString *message = saveError ?: @"写入 WAV 失败，系统未提供原因。";
@@ -746,11 +780,12 @@ double relativeL2(const std::vector<float> &actual, const std::vector<float> &re
         }
         trace.record(@"WAV 已保存；生成完成");
         return @{ @"success": @YES, @"message": [NSString stringWithFormat:@"iPhone 已完成 DiT 八步及 VAE %d 段推理。%@；歌词条件为%@。", vaeChunks,
-                       cpuVAE ? @"VAE CPU Low" : @"VAE Metal Low",
-                       condition ? @"本机编码的新歌词" : @"预计算固定样例"],
+                       cpuVAE ? @"VAE CPU Low" : (noTuneVAE ? @"VAE Metal Low NoTune" : @"VAE Metal Low"),
+                       condition ? (cpuVAE ? @"本机编码的新歌词和新风格" : @"本机编码的新歌词") : @"预计算固定样例"],
                   @"wavPath": target.path, @"elapsedSeconds": @(CFAbsoluteTimeGetCurrent() - started),
                   @"audioSeconds": @30.0,
-                  @"backend": cpuVAE ? @"DiT Metal 请求 / VAE CPU Low" : @"MNN Metal 请求 / CPU 回退可能" };
+                  @"backend": cpuVAE ? @"DiT Metal 请求 / VAE CPU Low"
+                                     : (noTuneVAE ? @"DiT Metal 请求 / VAE Metal NoTune" : @"MNN Metal 请求 / CPU 回退可能") };
     }
 }
 

@@ -71,13 +71,14 @@ jobs:
               print(f"{key}: {info.get(key)!r}")
           assert info.get("UIFileSharingEnabled") is True
           assert info.get("LSSupportsOpeningDocumentsInPlace") is True
-          assert str(info.get("CFBundleVersion")) == "20"
+          assert str(info.get("CFBundleVersion")) == "21"
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/vae-final-latent.f32").stat().st_size == 750 * 64 * 4
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-hidden.f32").is_file()
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/encoder-input-ids.i64").stat().st_size == 107 * 8
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/lyric-sample-ids.i32").stat().st_size == 73 * 4
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Tokenizer/tokenizer.json").stat().st_size > 10_000_000
           assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Tokenizer/sample-lyrics.txt").is_file()
+          assert Path("build/Build/Products/Release-iphoneos/AceStepMobile.app/Tokenizer/sample-caption.txt").is_file()
           for step in (1, 2):
               reference = Path(f"build/Build/Products/Release-iphoneos/AceStepMobile.app/Probe/dit-w4-cpu-step{step}.f32")
               assert reference.stat().st_size == 750 * 64 * 4

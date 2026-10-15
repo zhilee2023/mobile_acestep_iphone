@@ -31,7 +31,7 @@ NSData *probeData(NSString *name) {
                              @"dit_w4.mnn", @"dit_w4.mnn.weight",
                              @"vae_decoder_192_w4.mnn", @"vae_decoder_256_w4.mnn",
                              @"vae_decoder_174_w4.mnn", @"lyric_embedding.f16",
-                             @"lyric_encoder_73_w4.mnn"]) {
+                             @"lyric_encoder_73_w4.mnn", @"text_projector.f16"]) {
         NSString *path = [directory stringByAppendingPathComponent:name];
         NSDictionary *attributes = [manager attributesOfItemAtPath:path error:nil];
         status[name] = @([attributes[NSFileSize] unsignedLongLongValue] > 0);
@@ -168,6 +168,10 @@ NSData *probeData(NSString *name) {
     return [EncoderBenchmark runOptimizedCpuVaeSerialAtDirectory:directory];
 }
 
++ (NSDictionary<NSString *, id> *)generateNoTuneVAESongAtDirectory:(NSString *)directory {
+    return [FixedSongEngine generateOptimizedNoTuneVAEAtDirectory:directory];
+}
+
 + (NSDictionary<NSString *, id> *)diagnoseVAEAtDirectory:(NSString *)directory {
     return [FixedSongEngine diagnoseVAEAtDirectory:directory];
 }
@@ -198,6 +202,55 @@ NSData *probeData(NSString *name) {
               @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
               @"backend": @"端侧歌词编码 → DiT → VAE / Metal 请求、CPU 回退可能",
               @"message": [NSString stringWithFormat:@"新歌词已在手机编码并接入 DiT；30 秒音频生成成功，耗时 %.1f 秒，RTF %.2f。风格仍为固定样例。", elapsed, elapsed / 30.0] };
+}
+
++ (NSDictionary<NSString *, id> *)generateCustomSongWithLyrics:(NSString *)lyrics
+                                                     caption:(NSString *)caption
+                                                 atDirectory:(NSString *)directory {
+    const CFAbsoluteTime started = CFAbsoluteTimeGetCurrent();
+    NSDictionary<NSString *, id> *tokens = [LyricConditionEngine tokenizeCaption:caption];
+    if (![tokens[@"success"] boolValue]) return tokens;
+    NSDictionary<NSString *, id> *style = [EncoderBenchmark encodeStyleIDs:tokens[@"ids"] atDirectory:directory];
+    if (![style[@"success"] boolValue]) return style;
+    NSData *styleData = style[@"style"];
+    if (styleData.length != 107ULL * 2048 * sizeof(float)) return failure(@"Qwen 风格投影形状不正确。");
+    const double styleSeconds = CFAbsoluteTimeGetCurrent() - started;
+
+    // Never hold Qwen, lyric encoder, and DiT sessions at the same time.
+    int consecutive = 0;
+    const CFAbsoluteTime firstWait = CFAbsoluteTimeGetCurrent();
+    while (CFAbsoluteTimeGetCurrent() - firstWait < 10.0) {
+        consecutive = os_proc_available_memory() >= 2400000000ULL ? consecutive + 1 : 0;
+        if (consecutive >= 2) break;
+        usleep(250000);
+    }
+    if (consecutive < 2) return failure(@"Qwen 已完成，但内存尚未回收到 2400 MB；未启动歌词编码，请稍后重试。");
+    const CFAbsoluteTime lyricStarted = CFAbsoluteTimeGetCurrent();
+    NSDictionary<NSString *, id> *lyric = [LyricConditionEngine encodeLyrics:lyrics atDirectory:directory];
+    if (![lyric[@"success"] boolValue]) return lyric;
+    NSData *lyricCondition = lyric[@"condition"];
+    if (lyricCondition.length != 181ULL * 2048 * sizeof(float)) return failure(@"歌词编码条件形状不正确。");
+    NSMutableData *condition = [lyricCondition mutableCopy];
+    std::memcpy(static_cast<uint8_t *>(condition.mutableBytes) + 74ULL * 2048 * sizeof(float),
+                styleData.bytes, styleData.length);
+    const double lyricSeconds = CFAbsoluteTimeGetCurrent() - lyricStarted;
+
+    consecutive = 0;
+    const CFAbsoluteTime secondWait = CFAbsoluteTimeGetCurrent();
+    while (CFAbsoluteTimeGetCurrent() - secondWait < 10.0) {
+        consecutive = os_proc_available_memory() >= 2400000000ULL ? consecutive + 1 : 0;
+        if (consecutive >= 2) break;
+        usleep(250000);
+    }
+    if (consecutive < 2) return failure(@"歌词已完成，但内存尚未回收到 2400 MB；未启动 DiT，请稍后重试。");
+    NSDictionary<NSString *, id> *song = [FixedSongEngine generateWithConditionCpuVAE:condition atDirectory:directory];
+    if (![song[@"success"] boolValue]) return song;
+    const double elapsed = CFAbsoluteTimeGetCurrent() - started;
+    return @{ @"success": @YES, @"wavPath": song[@"wavPath"],
+              @"elapsedSeconds": @(elapsed), @"audioSeconds": @30.0,
+              @"backend": @"Qwen 风格 + ACE 歌词编码 → DiT Metal High → VAE CPU Low",
+              @"message": [NSString stringWithFormat:@"手机已接通风格、歌词、DiT 和 CPU VAE；30 秒音频耗时 %.1f 秒，RTF %.2f。风格编码 %.1f 秒，歌词编码 %.1f 秒。",
+                           elapsed, elapsed / 30.0, styleSeconds, lyricSeconds] };
 }
 
 @end

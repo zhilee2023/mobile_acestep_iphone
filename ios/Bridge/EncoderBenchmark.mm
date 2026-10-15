@@ -10,6 +10,7 @@
 #include <cstdio>
 #include <cstring>
 #include <memory>
+#include <vector>
 #include <unistd.h>
 
 namespace {
@@ -102,7 +103,7 @@ bool setInput(Graph &graph, const NSData *idsData) {
     return false;
 }
 
-bool readOutput(Graph &graph, float &peak) {
+bool readOutput(Graph &graph, float &peak, std::vector<float> *values = nullptr) {
     MNN::Tensor *output = graph.interpreter->getSessionOutput(graph.session, "last_hidden_state");
     if (!output) return false;
     MNN::Tensor host(output, output->getDimensionType(), true);
@@ -117,6 +118,7 @@ bool readOutput(Graph &graph, float &peak) {
         if (!std::isfinite(value)) return false;
         peak = std::max(peak, std::abs(value));
     }
+    if (values) values->assign(host.host<float>(), host.host<float>() + kTokens * kHiddenSize);
     return true;
 }
 } // namespace
@@ -128,6 +130,76 @@ bool readOutput(Graph &graph, float &peak) {
 @end
 
 @implementation EncoderBenchmark
+
++ (NSDictionary<NSString *, id> *)encodeStyleIDs:(NSData *)idsData atDirectory:(NSString *)directory {
+    @autoreleasepool {
+        Trace trace("style-encoder.log", @"开始：当前风格 → Qwen3-Embedding W4 → ACE-Step text_projector → DiT 风格条件");
+        if (idsData.length != kTokens * sizeof(int64_t)) return failure(@"风格 token 长度不正确。");
+        NSString *path = [directory stringByAppendingPathComponent:@"text_encoder_w4.mnn"];
+        NSString *external = [directory stringByAppendingPathComponent:@"text_encoder_w4.mnn.weight"];
+        NSString *projector = [directory stringByAppendingPathComponent:@"text_projector.f16"];
+        if (![NSFileManager.defaultManager fileExistsAtPath:path] ||
+            ![NSFileManager.defaultManager fileExistsAtPath:external]) {
+            return failure(@"Qwen 风格编码器模型或外部权重缺失。");
+        }
+        NSDictionary *projectorInfo = [NSFileManager.defaultManager attributesOfItemAtPath:projector error:nil];
+        if ([projectorInfo[NSFileSize] unsignedLongLongValue] != 2048ULL * 1024 * sizeof(uint16_t)) {
+            return failure(@"ACE-Step 风格投影权重缺失或大小不符，请导入 text_projector.f16。");
+        }
+        if (trace.availableBytes() < 2400000000ULL) return failure(@"Qwen 启动前可用内存不足 2400 MB，已安全停止。");
+        std::vector<float> qwenStates;
+        {
+            Graph graph;
+            const CFAbsoluteTime created = CFAbsoluteTimeGetCurrent();
+            graph.interpreter = MNN::Interpreter::createFromFile(path.fileSystemRepresentation);
+            if (!graph.interpreter) return failure(@"Qwen 图读取失败。");
+            MNN::BackendConfig backend;
+            backend.precision = MNN::BackendConfig::Precision_Low;
+            backend.memory = MNN::BackendConfig::Memory_Low;
+            MNN::ScheduleConfig config;
+            config.type = MNN_FORWARD_METAL;
+            config.backupType = MNN_FORWARD_CPU;
+            config.backendConfig = &backend;
+            graph.session = graph.interpreter->createSession(config);
+            trace.record([NSString stringWithFormat:@"Qwen 会话创建 %.3f 秒", CFAbsoluteTimeGetCurrent() - created]);
+            if (!graph.session) return failure(@"Qwen 会话创建失败。");
+            graph.interpreter->releaseModel();
+            if (!trace.hasHeadroom()) return failure(@"Qwen 会话已创建，但可用内存不足 512 MiB。");
+            if (!setInput(graph, idsData)) return failure(@"Qwen 输入形状不匹配。");
+            const CFAbsoluteTime forward = CFAbsoluteTimeGetCurrent();
+            const MNN::ErrorCode code = graph.interpreter->runSession(graph.session);
+            float peak = 0;
+            if (code != MNN::NO_ERROR || !readOutput(graph, peak, &qwenStates)) {
+                return failure(@"Qwen 风格编码输出错误或含非有限值。");
+            }
+            trace.record([NSString stringWithFormat:@"Qwen 前向与同步 %.3f 秒；峰值 %.6g",
+                          CFAbsoluteTimeGetCurrent() - forward, peak]);
+        }
+        trace.record(@"Qwen 会话已释放；开始 ACE-Step 1024→2048 风格投影");
+        NSData *weights = [NSData dataWithContentsOfFile:projector options:NSDataReadingMappedIfSafe error:nil];
+        if (!weights || weights.length != 2048ULL * 1024 * sizeof(uint16_t)) return failure(@"风格投影权重无法映射。");
+        const __fp16 *matrix = static_cast<const __fp16 *>(weights.bytes);
+        std::vector<float> projected(kTokens * 2048);
+        const CFAbsoluteTime projectionStart = CFAbsoluteTimeGetCurrent();
+        float peak = 0;
+        for (size_t token = 0; token < kTokens; ++token) {
+            const float *source = qwenStates.data() + token * kHiddenSize;
+            for (size_t output = 0; output < 2048; ++output) {
+                const __fp16 *row = matrix + output * kHiddenSize;
+                float sum = 0;
+                for (size_t input = 0; input < kHiddenSize; ++input) sum += source[input] * static_cast<float>(row[input]);
+                if (!std::isfinite(sum)) return failure(@"ACE-Step 风格投影输出含非有限值。");
+                projected[token * 2048 + output] = sum;
+                peak = std::max(peak, std::abs(sum));
+            }
+        }
+        trace.record([NSString stringWithFormat:@"风格投影完成 %.3f 秒；输出峰值 %.6g；Qwen→DiT 107×2048 条件已就绪",
+                      CFAbsoluteTimeGetCurrent() - projectionStart, peak]);
+        return @{ @"success": @YES, @"style": [NSData dataWithBytes:projected.data()
+                                                                  length:projected.size() * sizeof(float)],
+                  @"message": @"风格已在手机编码并投影到 DiT 条件宽度。" };
+    }
+}
 
 + (NSDictionary<NSString *, id> *)runFullSerialSongAtDirectory:(NSString *)directory {
     return [self runFullSerialSongAtDirectory:directory optimized:NO cpuVAE:NO];

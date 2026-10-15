@@ -107,19 +107,27 @@ def test_lyric_tokenizer_bundle_and_probe() -> None:
     assert (ROOT / "ios" / "Tokenizer" / "sample-lyrics.txt").is_file()
 
 
-def test_v20_vae_comparison_is_separate_from_default_generation() -> None:
+def test_v21_connected_condition_and_vae_modes() -> None:
     import plistlib
 
     info = plistlib.loads((ROOT / "ios" / "Info.plist").read_bytes())
-    assert info["CFBundleVersion"] == "20"
+    assert info["CFBundleVersion"] == "21"
     engine = (ROOT / "ios" / "Bridge" / "FixedSongEngine.mm").read_text(encoding="utf-8")
     benchmark = (ROOT / "ios" / "Bridge" / "EncoderBenchmark.mm").read_text(encoding="utf-8")
     ui = (ROOT / "ios" / "App" / "ContentView.swift").read_text(encoding="utf-8")
     assert 'vae-notune-diagnostic.log' in engine
     assert 'MNN_GPU_TUNING_NONE' in engine
     assert 'last-inference-cpu-vae.log' in engine
-    assert 'cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL' in engine
+    assert 'cpuVAE ? MNN_FORWARD_CPU : MNN_FORWARD_METAL, noTuneVAE' in engine
     assert 'encoder-cpu-vae-serial.log' in benchmark
-    assert '单独测 VAE NoTune' in ui
-    assert '生成 CPU Low VAE 对照歌曲' in ui
+    assert 'generateCustomSong()' in ui
+    assert 'generateNoTuneSong()' in ui
+    assert 'vaeDiagnosticCard' not in ui.split('var body: some View', 1)[1].split('private var header', 1)[0]
+    bridge = (ROOT / "ios" / "Bridge" / "AceBridge.mm").read_text(encoding="utf-8")
+    assert '[EncoderBenchmark encodeStyleIDs:' in bridge
+    assert '[LyricConditionEngine encodeLyrics:' in bridge
+    assert 'generateWithConditionCpuVAE:condition' in bridge
+    assert '74ULL * 2048 * sizeof(float)' in bridge
+    assert (ROOT / "ios/Tokenizer/sample-caption.txt").is_file()
+    assert (ROOT / "export/export_text_projector.py").is_file()
 

@@ -22,7 +22,10 @@ final class ModelStore: ObservableObject {
         .init(name: "lyric_embedding.f16", expectedBytes: 310_618_112),
         .init(name: "lyric_encoder_73_w4.mnn", expectedBytes: 254_171_424)
     ]
-    static let requiredFiles = coreFiles + lyricFiles
+    static let styleFiles: [ModelFile] = [
+        .init(name: "text_projector.f16", expectedBytes: 4_194_304)
+    ]
+    static let requiredFiles = coreFiles + lyricFiles + styleFiles
     static let expectedBytes = requiredFiles.reduce(Int64(0)) { $0 + $1.expectedBytes }
 
     @Published private(set) var fileSizes: [String: Int64] = [:]
@@ -32,8 +35,9 @@ final class ModelStore: ObservableObject {
     var validCount: Int { Self.requiredFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
     var coreValidCount: Int { Self.coreFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
     var lyricValidCount: Int { Self.lyricFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
+    var styleValidCount: Int { Self.styleFiles.filter { fileSizes[$0.name] == $0.expectedBytes }.count }
     var allModelsPresent: Bool { coreValidCount == Self.coreFiles.count }
-    var allCustomModelsPresent: Bool { allModelsPresent && lyricValidCount == Self.lyricFiles.count }
+    var allCustomModelsPresent: Bool { allModelsPresent && lyricValidCount == Self.lyricFiles.count && styleValidCount == Self.styleFiles.count }
     var importedBytes: Int64 { Self.requiredFiles.reduce(Int64(0)) { $0 + (fileSizes[$1.name] ?? 0) } }
 
     private let modelDirectory: URL
@@ -78,7 +82,7 @@ final class ModelStore: ObservableObject {
                 }
             }
             refresh(fileManager: fileManager)
-            message = imported.isEmpty ? "没有匹配的模型文件名。" : "已导入 \(imported.count) 个文件；基础模型 \(coreValidCount)/7、歌词模型 \(lyricValidCount)/2。"
+            message = imported.isEmpty ? "没有匹配的模型文件名。" : "已导入 \(imported.count) 个文件；基础模型 \(coreValidCount)/7、歌词模型 \(lyricValidCount)/2、风格投影 \(styleValidCount)/1。"
         } catch {
             refresh(fileManager: fileManager)
             message = "导入失败：\(error.localizedDescription)"
